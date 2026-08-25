@@ -5,8 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from app import (
-    Config, INPUT, QuickTranslator, detect_translation_direction, parse_glossary,
+    Config, INPUT, PROVIDER_PRESETS, QuickTranslator, detect_translation_direction, parse_glossary,
     normalize_pdf_layout, normalize_translation_output, translate_qwen_stream,
+    translate_glm_stream,
 )
 
 
@@ -72,6 +73,22 @@ class TranslationTests(unittest.TestCase):
         ])
         self.assertNotIn("clipboard_clear", capture_source)
         self.assertNotIn("clipboard_append", capture_source)
+
+    def test_main_provider_presets_are_complete(self):
+        for provider in ("智谱 GLM", "DeepSeek", "Kimi / Moonshot", "硅基流动", "OpenAI"):
+            self.assertTrue(PROVIDER_PRESETS[provider]["api_url"].startswith("https://"))
+            self.assertTrue(PROVIDER_PRESETS[provider]["model"])
+
+    @patch("urllib.request.urlopen")
+    def test_non_zhipu_provider_omits_zhipu_only_parameter(self, urlopen):
+        urlopen.return_value = FakeResponse([
+            'data: {"choices":[{"delta":{"content":"译文"}}]}\n',
+            "data: [DONE]\n",
+        ])
+        cfg = Config(provider="DeepSeek", api_key="test-key", model="deepseek-chat")
+        self.assertEqual(translate_glm_stream("Paper", cfg, lambda chunk: None), "译文")
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertNotIn("thinking", payload)
 
     @patch("urllib.request.urlopen")
     def test_qwen_cumulative_stream_replaces_instead_of_appending(self, urlopen):

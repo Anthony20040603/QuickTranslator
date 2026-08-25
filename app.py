@@ -21,7 +21,7 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.5.3"
+VERSION = "0.6.0"
 ACCENT = "#6C5CE7"
 ACCENT_DARK = "#5144C8"
 SURFACE = "#F5F4FA"
@@ -32,6 +32,32 @@ TM_PATH = CONFIG_PATH.with_name("translation_memory.json")
 ERROR_ALREADY_EXISTS = 183
 INSTANCE_MUTEX_NAME = "Local\\QuickTranslatorSingleInstance"
 
+PROVIDER_PRESETS = {
+    "智谱 GLM": {
+        "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "glm-4.7-flash", "fallback_model": "glm-4-flash",
+    },
+    "DeepSeek": {
+        "api_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-chat", "fallback_model": "",
+    },
+    "Kimi / Moonshot": {
+        "api_url": "https://api.moonshot.cn/v1/chat/completions",
+        "model": "moonshot-v1-8k", "fallback_model": "",
+    },
+    "硅基流动": {
+        "api_url": "https://api.siliconflow.cn/v1/chat/completions",
+        "model": "Qwen/Qwen3-8B", "fallback_model": "",
+    },
+    "OpenAI": {
+        "api_url": "https://api.openai.com/v1/chat/completions",
+        "model": "gpt-5-mini", "fallback_model": "",
+    },
+    "自定义兼容接口": {
+        "api_url": "", "model": "", "fallback_model": "",
+    },
+}
+
 
 @dataclass
 class Config:
@@ -40,6 +66,7 @@ class Config:
     accurate_model: str = "qwen-mt-plus"
     fast_model: str = "qwen-mt-turbo"
     translation_mode: str = "accurate"
+    provider: str = "智谱 GLM"
     api_url: str = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
     api_key: str = ""
     model: str = "glm-4.7-flash"
@@ -221,16 +248,18 @@ def translate_glm_stream(text: str, cfg: Config, on_chunk, model: str | None = N
         "忠实保留限定词、否定、因果关系、概率和不确定性，不得补充原文没有的结论。"
         "保留语义段落、列表、公式和表格结构，但不要保留 PDF 页面中的视觉换行或断词；只输出译文，不解释翻译过程。"
     )
-    payload = json.dumps({
+    payload_data = {
         "model": model or cfg.model,
         "temperature": 0.1,
         "stream": True,
-        "thinking": {"type": "disabled"},
         "messages": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": text},
         ],
-    }, ensure_ascii=False).encode("utf-8")
+    }
+    if cfg.provider == "智谱 GLM":
+        payload_data["thinking"] = {"type": "disabled"}
+    payload = json.dumps(payload_data, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         cfg.api_url,
         data=payload,
@@ -357,7 +386,10 @@ class QuickTranslator:
         self._bind_edge_resize()
         self._start_tray()
         self.root.after(100, self._poll_events)
-        self.root.after(500, self.hide)
+        if self.cfg.qwen_api_key or self.cfg.api_key:
+            self.root.after(500, self.hide)
+        else:
+            self.root.after(250, self._show_first_run_settings)
         threading.Thread(target=self._double_ctrl_loop, daemon=True).start()
         threading.Thread(target=self._double_shift_loop, daemon=True).start()
 
@@ -659,6 +691,11 @@ class QuickTranslator:
         self.root.after(60, self._read_selection)
 
     def _start_safe_capture(self) -> None:
+        if not self.cfg.qwen_api_key and not self.cfg.api_key:
+            self.status.config(text="请先配置翻译服务和 API Key")
+            self.show_window()
+            self.open_settings()
+            return
         now = time.monotonic()
         if self._capture_in_progress or now - self._last_capture_trigger < 0.9:
             return
@@ -728,7 +765,7 @@ class QuickTranslator:
                 self.events.put(("done", request_id))
                 return
             except Exception as exc:
-                self.events.put(("status", request_id, f"百炼暂不可用，正在切换 GLM：{exc}"))
+                self.events.put(("status", request_id, f"百炼暂不可用，正在切换{self.cfg.provider}：{exc}"))
 
         models = [self.cfg.model]
         if self.cfg.fallback_model and self.cfg.fallback_model not in models:
@@ -872,6 +909,11 @@ class QuickTranslator:
         self.root.attributes("-topmost", True)
         self.root.after(300, lambda: self.root.attributes("-topmost", False))
 
+    def _show_first_run_settings(self) -> None:
+        self.show_window()
+        self.status.config(text="首次使用 · 请先配置 API Key")
+        self.open_settings(first_run=True)
+
     def exit_app(self) -> None:
         if self._quitting:
             return
@@ -879,13 +921,22 @@ class QuickTranslator:
         self.tray_icon.stop()
         self.root.destroy()
 
-    def open_settings(self) -> None:
+    def open_settings(self, first_run: bool = False) -> None:
         win = tk.Toplevel(self.root)
-        win.title("设置")
-        win.geometry("690x510")
+        win.title("首次配置" if first_run else "设置")
+        win.geometry("720x560")
         win.transient(self.root)
         win.grab_set()
         entries: dict[str, ttk.Entry] = {}
+        if first_run:
+            welcome = ttk.Frame(win, padding=(18, 14, 18, 2))
+            welcome.pack(fill="x")
+            ttk.Label(welcome, text="欢迎使用划词翻译", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
+            ttk.Label(
+                welcome,
+                text="请先选择翻译服务并填写 API Key。密钥只保存在本机，不会进入安装包或 GitHub。",
+                foreground="#555",
+            ).pack(anchor="w", pady=(5, 0))
         notebook = ttk.Notebook(win)
         notebook.pack(fill="both", expand=True, padx=16, pady=(16, 8))
 
@@ -903,24 +954,62 @@ class QuickTranslator:
                 row=len(fields), column=0, columnspan=2, sticky="w", pady=(15, 0)
             )
 
-        add_tab("百炼 Qwen-MT", [
+        provider_frame = ttk.Frame(notebook, padding=18)
+        notebook.add(provider_frame, text="通用 AI 服务")
+        ttk.Label(provider_frame, text="服务商").grid(row=0, column=0, sticky="w", pady=9)
+        provider_var = tk.StringVar(value=self.cfg.provider if self.cfg.provider in PROVIDER_PRESETS else "自定义兼容接口")
+        provider_box = ttk.Combobox(
+            provider_frame, textvariable=provider_var,
+            values=list(PROVIDER_PRESETS), state="readonly",
+        )
+        provider_box.grid(row=0, column=1, sticky="ew", padx=(16, 0), pady=9)
+        provider_fields = [
+            ("API 地址", "api_url", False), ("API Key", "api_key", True),
+            ("首选模型", "model", False), ("备用模型（可空）", "fallback_model", False),
+        ]
+        for row, (label, key, secret) in enumerate(provider_fields, start=1):
+            ttk.Label(provider_frame, text=label).grid(row=row, column=0, sticky="w", pady=9)
+            entry = ttk.Entry(provider_frame, show="•" if secret else "")
+            entry.insert(0, getattr(self.cfg, key))
+            entry.grid(row=row, column=1, sticky="ew", padx=(16, 0), pady=9)
+            entries[key] = entry
+        provider_frame.columnconfigure(1, weight=1)
+        provider_note = ttk.Label(
+            provider_frame,
+            text="预设会填写推荐地址和模型，所有字段仍可手动修改。通用通道使用 OpenAI Chat Completions 协议。",
+            foreground="#666", wraplength=630,
+        )
+        provider_note.grid(row=5, column=0, columnspan=2, sticky="w", pady=(15, 0))
+
+        def apply_provider(event=None) -> None:
+            preset = PROVIDER_PRESETS[provider_var.get()]
+            for key in ("api_url", "model", "fallback_model"):
+                entries[key].delete(0, "end")
+                entries[key].insert(0, preset[key])
+
+        provider_box.bind("<<ComboboxSelected>>", apply_provider)
+
+        add_tab("专业 Qwen-MT", [
             ("API 地址", "qwen_api_url", False), ("API Key", "qwen_api_key", True),
             ("精准模型", "accurate_model", False), ("极速模型", "fast_model", False),
-        ], "推荐北京区域 Workspace 专属地址。未填写百炼 Key 时，程序会继续使用 GLM 备用通道。")
+        ], "科研翻译首选。未填写百炼 Key 时，程序会使用“通用 AI 服务”中的接口。")
         add_tab("科研翻译", [
             ("科研领域", "research_domain", False), ("英文领域提示", "domain_prompt", False),
-            ("术语表", "glossary", False), ("GLM 目标语言", "target_language", False),
+            ("术语表", "glossary", False), ("通用接口目标语言", "target_language", False),
         ], "术语表示例：cell culture=细胞培养; power=统计功效。Qwen-MT 会自动判断中译英或英译中。")
-        add_tab("备用 GLM", [
-            ("API 地址", "api_url", False), ("API Key", "api_key", True),
-            ("首选模型", "model", False), ("备用模型", "fallback_model", False),
-        ], "百炼未配置或调用失败时自动使用该通道。现有智谱设置会被保留。")
 
         def save() -> None:
             for key, entry in entries.items():
                 setattr(self.cfg, key, entry.get().strip())
-            if not self.cfg.api_url or not self.cfg.model or not self.cfg.qwen_api_url:
-                messagebox.showwarning(APP_NAME, "API 地址和模型不能为空。", parent=win)
+            self.cfg.provider = provider_var.get()
+            if not self.cfg.qwen_api_key and not self.cfg.api_key:
+                messagebox.showwarning(APP_NAME, "请至少填写一个 API Key。", parent=win)
+                return
+            if self.cfg.api_key and (not self.cfg.api_url or not self.cfg.model):
+                messagebox.showwarning(APP_NAME, "通用接口的 API 地址和模型不能为空。", parent=win)
+                return
+            if self.cfg.qwen_api_key and not self.cfg.qwen_api_url:
+                messagebox.showwarning(APP_NAME, "Qwen-MT API 地址不能为空。", parent=win)
                 return
             self.cfg.save()
             self.status.config(text=f"设置已保存 · 选中文字后按 {self.cfg.hotkey}")
@@ -929,7 +1018,7 @@ class QuickTranslator:
         actions = ttk.Frame(win, padding=(16, 5, 16, 14))
         actions.pack(fill="x")
         ttk.Label(actions, text="双击 Ctrl 翻译 · 双击 Shift 找回窗口", foreground="#666").pack(side="left")
-        ttk.Button(actions, text="保存全部设置", command=save).pack(side="right")
+        ttk.Button(actions, text="保存并开始使用", command=save).pack(side="right")
 
     def run(self) -> None:
         self.root.mainloop()
