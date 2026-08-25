@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+release/
+*.spec
+*.zip
+config.json
+translation_memory.json
+.env
+.env.*
+/安装到本机.bat
