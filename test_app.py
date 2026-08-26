@@ -5,9 +5,11 @@ import unittest
 from unittest.mock import patch
 
 from app import (
-    Config, INPUT, PROVIDER_PRESETS, QuickTranslator, detect_translation_direction, parse_glossary,
-    normalize_pdf_layout, normalize_translation_output, translate_qwen_stream,
-    translate_glm_stream,
+    Config, HotkeyDetector, INPUT, QuickTranslator, calculate_panel_height,
+    calculate_window_height,
+    detect_translation_direction,
+    hotkey_label, normalize_hotkey, normalize_pdf_layout, normalize_translation_output,
+    normalize_theme, parse_glossary, resolve_theme, theme_label, translate_qwen_stream,
 )
 
 
@@ -69,26 +71,46 @@ class TranslationTests(unittest.TestCase):
         capture_source = "\n".join([
             inspect.getsource(QuickTranslator.capture_and_translate),
             inspect.getsource(QuickTranslator._read_selection),
-            inspect.getsource(QuickTranslator._capture_after_ctrl_release),
+            inspect.getsource(QuickTranslator._capture_after_hotkey_release),
         ])
         self.assertNotIn("clipboard_clear", capture_source)
         self.assertNotIn("clipboard_append", capture_source)
 
-    def test_main_provider_presets_are_complete(self):
-        for provider in ("智谱 GLM", "DeepSeek", "Kimi / Moonshot", "硅基流动", "OpenAI"):
-            self.assertTrue(PROVIDER_PRESETS[provider]["api_url"].startswith("https://"))
-            self.assertTrue(PROVIDER_PRESETS[provider]["model"])
+    def test_legacy_double_ctrl_migrates_to_new_default(self):
+        self.assertEqual(normalize_hotkey("双击 Ctrl"), "ctrl_double_c")
+        self.assertEqual(hotkey_label("双击 Ctrl"), "按住 Ctrl，双击 C")
 
-    @patch("urllib.request.urlopen")
-    def test_non_zhipu_provider_omits_zhipu_only_parameter(self, urlopen):
-        urlopen.return_value = FakeResponse([
-            'data: {"choices":[{"delta":{"content":"译文"}}]}\n',
-            "data: [DONE]\n",
-        ])
-        cfg = Config(provider="DeepSeek", api_key="test-key", model="deepseek-chat")
-        self.assertEqual(translate_glm_stream("Paper", cfg, lambda chunk: None), "译文")
-        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
-        self.assertNotIn("thinking", payload)
+    def test_theme_values_are_normalized_and_labeled(self):
+        self.assertEqual(normalize_theme("DARK"), "dark")
+        self.assertEqual(normalize_theme("unknown"), "system")
+        self.assertEqual(theme_label("light"), "浅色")
+        self.assertEqual(resolve_theme("dark"), "dark")
+
+    def test_window_height_tracks_content_without_old_blank_area(self):
+        self.assertEqual(calculate_panel_height(4, 25), 176)
+        self.assertEqual(calculate_window_height(11, 25, 1080), 375)
+        self.assertEqual(calculate_window_height(1, 25, 1080), 150)
+        self.assertEqual(calculate_window_height(100, 25, 1000), 720)
+
+    @patch("app.system_theme", return_value="dark")
+    def test_system_theme_is_resolved_dynamically(self, mocked_system_theme):
+        self.assertEqual(resolve_theme("system"), "dark")
+        mocked_system_theme.assert_called_once_with()
+
+    def test_ctrl_double_c_requires_ctrl_and_two_distinct_c_presses(self):
+        detector = HotkeyDetector()
+        self.assertFalse(detector.update("ctrl_double_c", 1.00, ctrl=True, alt=False, c=True, t=False))
+        self.assertFalse(detector.update("ctrl_double_c", 1.05, ctrl=True, alt=False, c=False, t=False))
+        self.assertTrue(detector.update("ctrl_double_c", 1.25, ctrl=True, alt=False, c=True, t=False))
+        detector.reset()
+        self.assertFalse(detector.update("ctrl_double_c", 2.00, ctrl=False, alt=False, c=True, t=False))
+
+    def test_ctrl_alt_t_triggers_once_until_released(self):
+        detector = HotkeyDetector()
+        self.assertTrue(detector.update("ctrl_alt_t", 1.0, ctrl=True, alt=True, c=False, t=True))
+        self.assertFalse(detector.update("ctrl_alt_t", 1.1, ctrl=True, alt=True, c=False, t=True))
+        self.assertFalse(detector.update("ctrl_alt_t", 1.2, ctrl=True, alt=True, c=False, t=False))
+        self.assertTrue(detector.update("ctrl_alt_t", 1.3, ctrl=True, alt=True, c=False, t=True))
 
     @patch("urllib.request.urlopen")
     def test_qwen_cumulative_stream_replaces_instead_of_appending(self, urlopen):

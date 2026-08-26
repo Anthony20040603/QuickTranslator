@@ -9,6 +9,8 @@ python -m PyInstaller ^
   --windowed ^
   --onedir ^
   --name QuickTranslator ^
+  --icon assets\app_icon.png ^
+  --add-data "assets\app_icon.png;assets" ^
   --hidden-import pystray._win32 ^
   --exclude-module numpy ^
   --exclude-module psutil ^
