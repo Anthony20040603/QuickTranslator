@@ -81,7 +81,17 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("self.root.configure(menu=self.menu_bar)", source)
         self.assertIn("self.menu_bar.add_cascade", source)
         self.assertIn("self.window_menu.add_checkbutton", source)
+        self.assertIn("font=MENU_FONT", source)
         self.assertNotIn("ttk.Menubutton", source)
+
+    def test_settings_use_native_property_sheet_controls(self):
+        source = inspect.getsource(QuickTranslator.open_settings)
+        self.assertIn("ttk.Notebook", source)
+        self.assertIn('text="确定"', source)
+        self.assertIn('text="取消"', source)
+        self.assertIn('text="应用"', source)
+        self.assertNotIn("FluentButton", source)
+        self.assertNotIn("Fluent.TEntry", source)
 
     def test_topmost_menu_state_is_persisted_without_custom_caption_button(self):
         source = inspect.getsource(QuickTranslator.toggle_topmost)
