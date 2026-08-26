@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+*.zip
+config.json
+translation_memory.json
+.env
+.env.*
