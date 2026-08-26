@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from app import (
     Config, HotkeyDetector, INPUT, QuickTranslator, calculate_panel_height,
-    calculate_window_height,
+    calculate_window_height, display_line_count,
     detect_translation_direction,
     hotkey_label, normalize_hotkey, normalize_pdf_layout, normalize_translation_output,
     normalize_theme, parse_glossary, resolve_theme, theme_label, translate_qwen_stream,
@@ -87,10 +87,15 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(resolve_theme("dark"), "dark")
 
     def test_window_height_tracks_content_without_old_blank_area(self):
-        self.assertEqual(calculate_panel_height(4, 25), 176)
-        self.assertEqual(calculate_window_height(11, 25, 1080), 375)
-        self.assertEqual(calculate_window_height(1, 25, 1080), 150)
+        self.assertEqual(calculate_panel_height(4, 25), 184)
+        self.assertEqual(calculate_window_height(11, 25, 1080), 401)
+        self.assertEqual(calculate_window_height(1, 25, 1080), 190)
         self.assertEqual(calculate_window_height(100, 25, 1000), 720)
+
+    def test_tk_display_line_transitions_are_converted_to_visible_lines(self):
+        self.assertEqual(display_line_count(0), 1)
+        self.assertEqual(display_line_count(1), 2)
+        self.assertEqual(display_line_count("3"), 4)
 
     @patch("app.system_theme", return_value="dark")
     def test_system_theme_is_resolved_dynamically(self, mocked_system_theme):

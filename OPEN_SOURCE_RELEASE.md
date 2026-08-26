@@ -1,4 +1,4 @@
-# QuickTranslator 0.6.1 开源发布说明
+# QuickTranslator 0.6.3 开源发布说明
 
 本压缩包同时包含源码和 Windows 便携版：
 

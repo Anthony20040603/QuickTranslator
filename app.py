@@ -22,7 +22,7 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.6.1"
+VERSION = "0.6.3"
 FONT_TEXT = "Segoe UI Variable Text"
 FONT_DISPLAY = "Segoe UI Variable Text"
 FONT_ICON = "Segoe Fluent Icons"
@@ -32,6 +32,9 @@ ICON_PATH = Path(__file__).resolve().parent / "assets" / "app_icon.png"
 ERROR_ALREADY_EXISTS = 183
 INSTANCE_MUTEX_NAME = "Local\\QuickTranslatorSingleInstance"
 DEFAULT_HOTKEY = "ctrl_double_c"
+TITLEBAR_HEIGHT = 32
+TOOLBAR_HEIGHT = 42
+MIN_WINDOW_HEIGHT = 190
 HOTKEY_LABELS = {
     "ctrl_double_c": "按住 Ctrl，双击 C",
     "ctrl_alt_t": "Ctrl + Alt + T",
@@ -114,13 +117,21 @@ def resolve_theme(value: object) -> str:
 
 def calculate_panel_height(display_lines: int, line_height: int) -> int:
     """Fit text, action row and the rounded panel's inner padding."""
-    return 76 + max(1, display_lines) * max(16, line_height)
+    return 84 + max(1, display_lines) * max(16, line_height)
 
 
 def calculate_window_height(display_lines: int, line_height: int, screen_height: int) -> int:
-    """Fit the floating panel and its outer Mica margins."""
-    content_height = calculate_panel_height(display_lines, line_height) + 24
-    return min(int(screen_height * 0.72), max(150, content_height))
+    """Fit the compact toolbar and translation area without leaving blank space."""
+    content_height = calculate_panel_height(display_lines, line_height) + TOOLBAR_HEIGHT
+    return min(int(screen_height * 0.72), max(MIN_WINDOW_HEIGHT, content_height))
+
+
+def display_line_count(raw_count: object) -> int:
+    """Tk counts display-line transitions; the visible line count is one greater."""
+    try:
+        return max(1, int(raw_count) + 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 def _colorref(hex_color: str) -> int:
@@ -130,8 +141,8 @@ def _colorref(hex_color: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
-def apply_fluent_window(window: tk.Misc, backdrop_type: int = 2) -> None:
-    """Ask Windows 11 to apply rounded corners, Mica and native caption colors."""
+def apply_fluent_window(window: tk.Misc, backdrop_type: int = 0) -> None:
+    """Keep the normal Windows frame while matching its light or dark caption."""
     try:
         window.update_idletasks()
         client_hwnd = window.winfo_id()
@@ -152,12 +163,45 @@ def apply_fluent_window(window: tk.Misc, backdrop_type: int = 2) -> None:
 
         set_int(20, 1 if IS_DARK else 0)  # DWMWA_USE_IMMERSIVE_DARK_MODE
         set_int(33, 2)  # DWMWA_WINDOW_CORNER_PREFERENCE: round
-        set_int(34, -2)  # DWMWA_COLOR_NONE: remove the caption/client separator.
-        set_int(35, -1)  # Keep the Mica caption instead of painting a flat color.
+        set_int(34, -1)  # Use the normal Windows frame and separator.
+        set_int(35, -1)
         set_int(36, -1)
-        set_int(38, backdrop_type)  # DWMWA_SYSTEMBACKDROP_TYPE: Mica
+        set_int(38, backdrop_type)  # Use the normal system backdrop.
     except (AttributeError, OSError, tk.TclError):
         # Older Windows versions keep the same Fluent-inspired fallback palette.
+        pass
+
+
+def apply_borderless_window(window: tk.Misc) -> None:
+    """Keep a normal taskbar window while replacing only its native caption."""
+    try:
+        window.update_idletasks()
+        client_hwnd = window.winfo_id()
+        user32 = ctypes.windll.user32
+        user32.GetParent.argtypes = [ctypes.wintypes.HWND]
+        user32.GetParent.restype = ctypes.wintypes.HWND
+        user32.GetWindowLongW.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [ctypes.wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user32.SetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowPos.argtypes = [
+            ctypes.wintypes.HWND, ctypes.wintypes.HWND,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = ctypes.wintypes.BOOL
+        hwnd = user32.GetParent(client_hwnd) or client_hwnd
+        gwl_style = -16
+        ws_caption = 0x00C00000
+        ws_maximizebox = 0x00010000
+        ws_thickframe = 0x00040000
+        ws_minimizebox = 0x00020000
+        ws_sysmenu = 0x00080000
+        style = user32.GetWindowLongW(hwnd, gwl_style)
+        style = (style & ~ws_caption & ~ws_maximizebox) | ws_thickframe | ws_minimizebox | ws_sysmenu
+        user32.SetWindowLongW(hwnd, gwl_style, style)
+        swp_flags = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, swp_flags)
+    except (AttributeError, OSError, tk.TclError):
         pass
 
 
@@ -326,6 +370,181 @@ class FluentButton(tk.Canvas):
         super().destroy()
 
 
+class CaptionButton(tk.Canvas):
+    """Windows 11-style caption control for the integrated titlebar."""
+
+    def __init__(
+        self, parent: tk.Misc, glyph: str, command, *, role: str = "normal",
+        tooltip: str = "", selected: bool = False,
+    ) -> None:
+        self._surface = parent.cget("background")
+        super().__init__(
+            parent, width=46, height=TITLEBAR_HEIGHT, background=self._surface,
+            borderwidth=0, highlightthickness=0, cursor="arrow", takefocus=1,
+        )
+        self._glyph = glyph
+        self._command = command
+        self._role = role
+        self._selected = selected
+        self._hovered = False
+        self._pressed = False
+        self._tooltip = FluentToolTip(self, tooltip)
+        self.bind("<Configure>", lambda event: self._draw())
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Return>", lambda event: self._invoke())
+        self.bind("<space>", lambda event: self._invoke())
+        self._draw()
+
+    def _draw(self) -> None:
+        self.delete("all")
+        if self._role == "close" and (self._hovered or self._pressed):
+            fill = "#A4262C" if self._pressed else "#C42B1C"
+            foreground = "#FFFFFF"
+        else:
+            fill = CONTROL_PRESSED if self._pressed else CONTROL_HOVER if self._hovered else self._surface
+            foreground = ACCENT if self._selected else TEXT
+        self.create_rectangle(
+            0, 0, max(2, self.winfo_width()), max(2, self.winfo_height()),
+            fill=fill, outline=fill,
+        )
+        self.create_text(
+            self.winfo_width() / 2, self.winfo_height() / 2,
+            text=self._glyph, fill=foreground, font=(FONT_ICON, 10),
+        )
+
+    def _on_enter(self, event) -> None:
+        self._hovered = True
+        self._draw()
+        self._tooltip.schedule()
+
+    def _on_leave(self, event) -> None:
+        self._hovered = False
+        self._pressed = False
+        self._draw()
+        self._tooltip.cancel()
+
+    def _on_press(self, event) -> None:
+        self.focus_set()
+        self._pressed = True
+        self._draw()
+        self._tooltip.cancel()
+
+    def _on_release(self, event) -> None:
+        inside = 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height()
+        self._pressed = False
+        self._draw()
+        if inside:
+            self._invoke()
+
+    def _invoke(self) -> None:
+        if callable(self._command):
+            self._command()
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._draw()
+
+    def set_tooltip(self, text: str) -> None:
+        self._tooltip.text = text
+
+    def destroy(self) -> None:
+        self._tooltip.cancel()
+        super().destroy()
+
+
+class FluentScrollbar(tk.Canvas):
+    """Compact Fluent overlay scrollbar without legacy arrow buttons."""
+
+    def __init__(self, parent: tk.Misc, command) -> None:
+        self._surface = parent.cget("background")
+        super().__init__(
+            parent, width=12, background=self._surface, borderwidth=0,
+            highlightthickness=0, cursor="arrow",
+        )
+        self._command = command
+        self._first = 0.0
+        self._last = 1.0
+        self._hovered = False
+        self._drag_y: int | None = None
+        self._drag_first = 0.0
+        self.bind("<Configure>", lambda event: self._draw())
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+
+    def set(self, first: str | float, last: str | float) -> None:
+        self._first = max(0.0, min(1.0, float(first)))
+        self._last = max(self._first, min(1.0, float(last)))
+        self._draw()
+
+    def _thumb_geometry(self) -> tuple[float, float] | None:
+        if self._last - self._first >= 0.999:
+            return None
+        margin = 2.0
+        track = max(1.0, self.winfo_height() - margin * 2)
+        visible = max(0.01, self._last - self._first)
+        thumb_height = min(track, max(24.0, track * visible))
+        movable = max(0.0, track - thumb_height)
+        denominator = max(0.001, 1.0 - visible)
+        thumb_top = margin + movable * min(1.0, self._first / denominator)
+        return thumb_top, thumb_top + thumb_height
+
+    def _draw(self) -> None:
+        self.delete("all")
+        geometry = self._thumb_geometry()
+        if geometry is None:
+            return
+        top, bottom = geometry
+        thumb_width = 6 if self._hovered or self._drag_y is not None else 4
+        x1 = (max(2, self.winfo_width()) - thumb_width) / 2
+        _draw_rounded_rectangle(
+            self, x1, top, x1 + thumb_width, bottom, thumb_width / 2,
+            fill=SCROLL_THUMB, outline=SCROLL_THUMB,
+        )
+
+    def _on_enter(self, event) -> None:
+        self._hovered = True
+        self._draw()
+
+    def _on_leave(self, event) -> None:
+        self._hovered = False
+        if self._drag_y is None:
+            self._draw()
+
+    def _on_press(self, event) -> None:
+        geometry = self._thumb_geometry()
+        if geometry is None:
+            return
+        top, bottom = geometry
+        if top <= event.y <= bottom:
+            self._drag_y = event.y
+            self._drag_first = self._first
+        else:
+            self._command("scroll", -1 if event.y < top else 1, "pages")
+        self._draw()
+
+    def _on_drag(self, event) -> None:
+        if self._drag_y is None:
+            return
+        geometry = self._thumb_geometry()
+        if geometry is None:
+            return
+        top, bottom = geometry
+        movable = max(1.0, self.winfo_height() - 4.0 - (bottom - top))
+        visible = max(0.01, self._last - self._first)
+        new_first = self._drag_first + (event.y - self._drag_y) / movable * (1.0 - visible)
+        self._command("moveto", max(0.0, min(1.0 - visible, new_first)))
+
+    def _on_release(self, event) -> None:
+        self._drag_y = None
+        self._draw()
+
+
 class RoundedFrame(tk.Canvas):
     def __init__(
         self, parent: tk.Misc, *, fill: str, outline: str, radius: int = 12,
@@ -375,6 +594,7 @@ class Config:
     glossary: str = ""
     hotkey: str = DEFAULT_HOTKEY
     theme: str = "system"
+    always_on_top: bool = False
 
     @classmethod
     def load(cls) -> "Config":
@@ -383,6 +603,7 @@ class Config:
             values = {k: raw[k] for k in cls.__annotations__ if k in raw}
             values["hotkey"] = normalize_hotkey(raw.get("hotkey", DEFAULT_HOTKEY))
             values["theme"] = normalize_theme(raw.get("theme", "system"))
+            values["always_on_top"] = raw.get("always_on_top", False) is True
             return cls(**values)
         except (OSError, ValueError, TypeError):
             return cls(api_key=os.getenv("TRANSLATOR_API_KEY", ""))
@@ -713,9 +934,10 @@ class QuickTranslator:
         self.root = tk.Tk()
         self.root.title("QuickTranslator")
         self.root.attributes("-alpha", 1.0)
-        self.root.geometry("640x410")
-        self.root.minsize(480, 150)
+        self.root.geometry("680x300")
+        self.root.minsize(520, MIN_WINDOW_HEIGHT)
         self.root.configure(background=WINDOW_BG)
+        self.root.attributes("-topmost", False)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         self.root.bind("<Escape>", lambda event: self.hide())
         self.events: queue.Queue[tuple] = queue.Queue()
@@ -732,6 +954,7 @@ class QuickTranslator:
         self._resize_job = None
         self._resize_animation_job = None
         self._resize_target = None
+        self._scrollbar_job = None
         self._edge_resize = None
         self._cursor_widget = None
         self._cursor_original = ""
@@ -744,27 +967,34 @@ class QuickTranslator:
         self.root.after(100, self._poll_events)
         self.root.after(2500, self._poll_system_theme)
         settings_preview = "--settings-preview" in sys.argv or "settingspreview" in self._executable_name
-        content_preview = "--content-preview" in sys.argv or "contentpreview" in self._executable_name
+        short_content_preview = "shortcontentpreview" in self._executable_name
+        content_preview = (
+            "--content-preview" in sys.argv or "contentpreview" in self._executable_name
+        )
         preview_mode = (
             "--ui-preview" in sys.argv or settings_preview or self._executable_name.endswith("preview")
         )
         if preview_mode:
-            self.root.after(40, lambda: apply_fluent_window(self.root, 2))
+            self.root.after(40, lambda: apply_fluent_window(self.root, 0))
             if settings_preview:
                 self.root.after(250, self.open_settings)
             if content_preview:
                 preview_text = (
-                    "多焦视网膜电图（mfERG）是一种电生理检查方法，可同时评估视网膜多个独立区域的功能。"
-                    "本文由国际临床视觉电生理学会（ISCEV）发布，旨在提供经更新与修订的临床多焦"
-                    "视网膜电图标准，并界定基本临床 mfERG 记录与报告的最低规范，以确保来自全球不同"
-                    "实验室的检测结果能够被准确识别并进行比较。与先前标准相比，本次修订的主要变化包括："
-                    "用于记录的 m 序列的最小长度、结果报告方式，以及文档格式的调整。"
+                    "这是一段用于检查短译文高度的两行文本，窗口应完整显示它，不需要滚动。"
+                    if short_content_preview else
+                    (
+                        "多焦视网膜电图（mfERG）是一种电生理检查方法，可同时评估视网膜多个独立区域的功能。"
+                        "本文由国际临床视觉电生理学会（ISCEV）发布，旨在提供经更新与修订的临床多焦"
+                        "视网膜电图标准，并界定基本临床 mfERG 记录与报告的最低规范，以确保来自全球不同"
+                        "实验室的检测结果能够被准确识别并进行比较。与先前标准相比，本次修订的主要变化包括："
+                        "用于记录的 m 序列的最小长度、结果报告方式，以及文档格式的调整。"
+                    ) * 8
                 )
                 self.root.after(180, lambda: self.show_message(preview_text, resize=True))
                 self.root.after(200, lambda: self.status.config(text="翻译完成"))
         else:
             self.root.after(500, self.hide)
-            self.root.after(40, lambda: apply_fluent_window(self.root, 2))
+            self.root.after(40, lambda: apply_fluent_window(self.root, 0))
         threading.Thread(target=self._translation_hotkey_loop, daemon=True).start()
         threading.Thread(target=self._double_shift_loop, daemon=True).start()
 
@@ -774,78 +1004,96 @@ class QuickTranslator:
             self._tray_image.resize((64, 64), Image.Resampling.LANCZOS)
         )
         self.root.iconphoto(True, self._window_icon)
-        workspace = tk.Frame(self.root, background=WINDOW_BG)
-        workspace.pack(fill="both", expand=True)
 
-        rail = tk.Frame(workspace, background=WINDOW_BG, width=58)
-        rail.pack(side="left", fill="y")
-        rail.pack_propagate(False)
+        toolbar = tk.Frame(
+            self.root, background=SURFACE_ALT, height=TOOLBAR_HEIGHT,
+            borderwidth=0, highlightthickness=0,
+        )
+        toolbar.pack(fill="x")
+        toolbar.pack_propagate(False)
 
-        def rail_item(
-            glyph: str, tooltip: str, command, *, selected: bool = False,
-            parent: tk.Misc = rail,
-        ) -> FluentButton:
-            item = tk.Frame(parent, background=WINDOW_BG, width=58, height=42)
-            item.pack(fill="x", pady=(5 if selected else 1, 0))
-            item.pack_propagate(False)
-            button = FluentButton(
-                item, glyph, command, kind="selected" if selected else "subtle",
-                width=40, height=36, icon=True, tooltip=tooltip,
-            )
-            button.pack(padx=9, pady=3)
-            return button
+        self.mode_var = tk.StringVar(value=f"模型：{self._mode_label()}")
+        self.mode_button = ttk.Menubutton(
+            toolbar, textvariable=self.mode_var, style="Toolbar.TMenubutton",
+        )
+        mode_menu = tk.Menu(toolbar, tearoff=False)
+        mode_menu.add_command(label="精准 Plus", command=lambda: self.set_mode("accurate"))
+        mode_menu.add_command(label="极速 Turbo", command=lambda: self.set_mode("fast"))
+        self.mode_button.configure(menu=mode_menu)
+        self.mode_button.pack(side="left", padx=(8, 4), pady=7)
 
-        rail_item("\uE70F", "翻译", lambda: None, selected=True)
-        self.mode_button = rail_item("\uE945", self._mode_label(), self.toggle_mode)
+        theme_action = "浅色" if self._resolved_theme == "dark" else "深色"
+        self.theme_button = ttk.Button(
+            toolbar, text=theme_action, command=self.toggle_theme, style="Toolbar.TButton",
+        )
+        self.theme_button.pack(side="left", padx=4, pady=7)
+        ttk.Button(
+            toolbar, text="设置…", command=self.open_settings, style="Toolbar.TButton",
+        ).pack(side="left", padx=4, pady=7)
 
-        rail_bottom = tk.Frame(rail, background=WINDOW_BG)
-        rail_bottom.pack(side="bottom", fill="x", pady=(0, 7))
-        rail_item("\uE713", "设置", self.open_settings, parent=rail_bottom)
-
-        content = tk.Frame(workspace, background=WINDOW_BG, borderwidth=0)
-        content.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
-
-        panel = RoundedFrame(content, fill=SURFACE, outline=BORDER, radius=12, padding=14)
+        panel = tk.Frame(
+            self.root, background=SURFACE, borderwidth=0,
+            highlightthickness=1, highlightbackground=BORDER,
+        )
         self.translation_panel = panel
         panel.pack(fill="both", expand=True)
-        panel_body = panel.container
+        panel_body = panel
         panel_body.rowconfigure(0, weight=1)
         panel_body.columnconfigure(0, weight=1)
-        self.scrollbar = ttk.Scrollbar(
-            panel_body, orient="vertical", style="Fluent.Vertical.TScrollbar",
-        )
         self.output = tk.Text(
-            panel_body, wrap="char", padx=2, pady=4, height=4, font=(FONT_TEXT, 11),
+            panel_body, wrap="char", padx=16, pady=14, height=4, font=(FONT_TEXT, 11),
             relief="flat", borderwidth=0, highlightthickness=0,
             background=SURFACE, foreground=TEXT, insertbackground=TEXT,
-            selectbackground=SELECTION, spacing1=3, spacing3=3, undo=False,
+            selectbackground=SELECTION, spacing1=3, spacing3=3, undo=True,
+            insertwidth=1, takefocus=1,
             yscrollcommand=self._on_output_scroll,
         )
         self.output.grid(row=0, column=0, sticky="nsew")
-        self.scrollbar.config(command=self.output.yview)
+        self.scrollbar = FluentScrollbar(panel_body, command=self.output.yview)
 
-        bottom = tk.Frame(panel_body, background=SURFACE, height=38)
-        bottom.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        bottom = tk.Frame(panel_body, background=SURFACE, height=48)
+        bottom.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 10))
         self.status = tk.Label(
             bottom, text="", foreground=MUTED, background=SURFACE,
             font=(FONT_TEXT, 9), anchor="w",
         )
         self.status.pack(side="left", fill="x", expand=True)
-        self._fluent_button(
-            bottom, "\uE8C8", self.copy_result, "secondary",
-            icon=True, width=36, tooltip="复制译文",
+        ttk.Button(
+            bottom, text="复制", command=self.copy_result, style="Action.TButton",
+        ).pack(side="right", padx=(6, 0))
+        ttk.Button(
+            bottom, text="确认", command=self.confirm_translation, style="Primary.TButton",
         ).pack(side="right")
-        self._fluent_button(
-            bottom, "\uE73E", self.confirm_translation, "primary",
-            icon=True, width=36, tooltip="确认译文",
-        ).pack(side="right", padx=(0, 7))
 
     def _configure_fluent_styles(self) -> None:
         style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
+        candidates = ("clam",) if IS_DARK else ("vista", "winnative", "clam")
+        for candidate in candidates:
+            if candidate in style.theme_names():
+                style.theme_use(candidate)
+                break
+        style.configure("Toolbar.TButton", padding=(10, 4))
+        style.configure("Toolbar.TMenubutton", padding=(10, 4))
+        style.configure("Action.TButton", padding=(12, 5))
+        style.configure("Primary.TButton", padding=(12, 5))
+        if IS_DARK:
+            for name in ("Toolbar.TButton", "Toolbar.TMenubutton", "Action.TButton"):
+                style.configure(
+                    name, background=CONTROL_FILL, foreground=TEXT,
+                    bordercolor=BORDER_STRONG, lightcolor=BORDER_STRONG,
+                    darkcolor=BORDER_STRONG,
+                )
+                style.map(
+                    name, background=[("active", CONTROL_HOVER), ("pressed", CONTROL_PRESSED)],
+                )
+            style.configure(
+                "Primary.TButton", background=ACCENT, foreground=ACCENT_TEXT,
+                bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+            )
+            style.map(
+                "Primary.TButton",
+                background=[("active", ACCENT_HOVER), ("pressed", ACCENT_PRESSED)],
+            )
         style.configure(
             "Fluent.TEntry", fieldbackground=CONTROL_FILL, foreground=TEXT,
             bordercolor=BORDER_STRONG, lightcolor=BORDER_STRONG, darkcolor=BORDER_STRONG,
@@ -869,16 +1117,30 @@ class QuickTranslator:
             selectforeground=[("readonly", TEXT)],
             bordercolor=[("focus", ACCENT), ("active", BORDER_STRONG)],
         )
-        style.configure(
-            "Fluent.Vertical.TScrollbar", background=SCROLL_THUMB, troughcolor=SURFACE,
-            bordercolor=SURFACE, arrowcolor=SURFACE, width=8, relief="flat",
-        )
-
     def _on_output_scroll(self, first: str, last: str) -> None:
+        if not hasattr(self, "scrollbar"):
+            return
         self.scrollbar.set(first, last)
-        overflowing = float(first) > 0.0 or float(last) < 0.999
+        if self._scrollbar_job is None:
+            self._scrollbar_job = self.root.after_idle(self._refresh_output_scrollbar)
+
+    def _refresh_output_scrollbar(self) -> None:
+        self._scrollbar_job = None
+        try:
+            first, last = self.output.yview()
+            self.scrollbar.set(first, last)
+            first_line = self.output.dlineinfo("1.0")
+            last_line = self.output.dlineinfo("end-1c")
+            widget_height = self.output.winfo_height()
+            overflowing = (
+                first_line is None or last_line is None
+                or first_line[1] < 0
+                or last_line[1] + last_line[3] > widget_height
+            )
+        except tk.TclError:
+            return
         if overflowing and not self.scrollbar.winfo_ismapped():
-            self.scrollbar.grid(row=0, column=1, sticky="ns")
+            self.scrollbar.grid(row=0, column=1, sticky="ns", padx=(4, 0))
         elif not overflowing and self.scrollbar.winfo_ismapped():
             self.scrollbar.grid_remove()
 
@@ -926,16 +1188,52 @@ class QuickTranslator:
         if current_text:
             self.output.delete("1.0", "end")
             self.output.insert("1.0", current_text)
-        self.root.after(20, lambda: apply_fluent_window(self.root, 2))
+        self.root.after(20, lambda: apply_fluent_window(self.root, 0))
 
     def _mode_label(self) -> str:
         return "精准 Plus" if self.cfg.translation_mode == "accurate" else "极速 Turbo"
 
-    def toggle_mode(self) -> None:
-        self.cfg.translation_mode = "fast" if self.cfg.translation_mode == "accurate" else "accurate"
-        self.mode_button.set_tooltip(self._mode_label())
+    def set_mode(self, mode: str) -> None:
+        if mode not in {"accurate", "fast"}:
+            return
+        self.cfg.translation_mode = mode
+        if hasattr(self, "mode_var"):
+            self.mode_var.set(f"模型：{self._mode_label()}")
         self.cfg.save()
         self.status.config(text=f"已切换为 {self._mode_label()}")
+
+    def toggle_mode(self) -> None:
+        mode = "fast" if self.cfg.translation_mode == "accurate" else "accurate"
+        self.set_mode(mode)
+
+    def toggle_theme(self) -> None:
+        resolved = "light" if self._resolved_theme == "dark" else "dark"
+        self.cfg.theme = resolved
+        self.cfg.save()
+        self._apply_resolved_theme(resolved)
+        self.status.config(text=f"已切换为{THEME_LABELS[resolved]}模式")
+
+    def _restore_topmost(self) -> None:
+        if not self._quitting:
+            self.root.attributes("-topmost", False)
+
+    def toggle_topmost(self) -> None:
+        self.cfg.always_on_top = not self.cfg.always_on_top
+        self.cfg.save()
+        self._restore_topmost()
+        self.pin_button.set_selected(self.cfg.always_on_top)
+        self.pin_button.set_tooltip("取消始终置顶" if self.cfg.always_on_top else "始终置顶")
+        self.status.config(text="窗口已始终置顶" if self.cfg.always_on_top else "已取消始终置顶")
+
+    def minimize_window(self) -> None:
+        """Minimize the borderless main window through the native window handle."""
+        try:
+            self.root.update_idletasks()
+            client_hwnd = self.root.winfo_id()
+            hwnd = ctypes.windll.user32.GetParent(client_hwnd) or client_hwnd
+            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+        except (AttributeError, OSError, tk.TclError):
+            self.hide()
 
     def _start_drag(self, event) -> None:
         if self._edge_at(event):
@@ -1023,12 +1321,12 @@ class QuickTranslator:
         if "e" in edge:
             new_width = max(380, width + dx)
         if "s" in edge:
-            new_height = max(170, height + dy)
+            new_height = max(MIN_WINDOW_HEIGHT, height + dy)
         if "w" in edge:
             new_width = max(380, width - dx)
             new_x = win_x + width - new_width
         if "n" in edge:
-            new_height = max(170, height - dy)
+            new_height = max(MIN_WINDOW_HEIGHT, height - dy)
             new_y = win_y + height - new_height
         self.root.geometry(f"{new_width}x{new_height}+{new_x}+{new_y}")
 
@@ -1044,7 +1342,10 @@ class QuickTranslator:
     def _resize_window(self, event) -> None:
         start_x, start_y, start_width, start_height = self._resize_origin
         width = max(520, min(self.root.winfo_screenwidth() - 20, start_width + event.x_root - start_x))
-        height = max(150, min(self.root.winfo_screenheight() - 80, start_height + event.y_root - start_y))
+        height = max(
+            MIN_WINDOW_HEIGHT,
+            min(self.root.winfo_screenheight() - 80, start_height + event.y_root - start_y),
+        )
         self.root.geometry(f"{width}x{height}")
 
     def _make_tray_image(self) -> Image.Image:
@@ -1264,14 +1565,14 @@ class QuickTranslator:
         point = ctypes.wintypes.POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
         width = max(520, self.root.winfo_width())
-        height = max(150, self.root.winfo_height())
+        height = max(MIN_WINDOW_HEIGHT, self.root.winfo_height())
         x = min(point.x + 18, self.root.winfo_screenwidth() - width - 12)
         y = min(point.y + 18, self.root.winfo_screenheight() - height - 60)
         self.root.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
-        self.root.after(800, lambda: self.root.attributes("-topmost", False))
+        self.root.after(800, self._restore_topmost)
 
     def _show_error(self, message: str) -> None:
         self.show_message(f"翻译失败\n\n{message}")
@@ -1310,21 +1611,25 @@ class QuickTranslator:
             return
         self.root.update_idletasks()
         try:
-            display_lines = max(1, int(self.output.count("1.0", "end-1c", "displaylines")[0]))
+            display_lines = display_line_count(
+                self.output.count("1.0", "end-1c", "displaylines")[0]
+            )
         except (TypeError, tk.TclError):
             display_lines = max(1, self.output.get("1.0", "end-1c").count("\n") + 1)
         try:
             font_metrics = int(self.output.tk.call("font", "metrics", self.output.cget("font"), "-linespace"))
-            line_height = font_metrics + int(self.output.cget("spacing1")) + int(
-                self.output.cget("spacing3")
-            )
+            # spacing1/spacing3 apply to the paragraph edges, not to every wrapped line.
+            line_height = font_metrics
         except (TypeError, ValueError, tk.TclError):
             line_height = 24
         screen_height = self.root.winfo_screenheight()
         target_height = calculate_window_height(display_lines, line_height, screen_height)
-        panel_height = min(calculate_panel_height(display_lines, line_height), target_height - 24)
+        panel_height = min(
+            calculate_panel_height(display_lines, line_height),
+            target_height - TOOLBAR_HEIGHT,
+        )
         if hasattr(self, "translation_panel"):
-            self.translation_panel.configure(height=max(100, panel_height))
+            self.translation_panel.configure(height=max(120, panel_height))
             self.translation_panel.pack_configure(fill="x", expand=False)
         width = max(520, self.root.winfo_width())
         x, y = self.root.winfo_x(), self.root.winfo_y()
@@ -1348,6 +1653,8 @@ class QuickTranslator:
             next_y = target_y
         width, x = max(520, self.root.winfo_width()), max(0, self.root.winfo_x())
         self.root.geometry(f"{width}x{next_height}+{x}+{max(0, next_y)}")
+        if self._scrollbar_job is None:
+            self._scrollbar_job = self.root.after_idle(self._refresh_output_scrollbar)
         if next_height != target_height or next_y != target_y:
             self._resize_animation_job = self.root.after(16, self._animate_height)
 
@@ -1382,7 +1689,7 @@ class QuickTranslator:
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
-        self.root.after(300, lambda: self.root.attributes("-topmost", False))
+        self.root.after(300, self._restore_topmost)
 
     def exit_app(self) -> None:
         if self._quitting:

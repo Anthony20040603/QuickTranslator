@@ -2,8 +2,10 @@
 setlocal
 cd /d "%~dp0"
 set PYTHONNOUSERSITE=1
+set "PYTHON_EXE=python"
+if exist ".build-venv\Scripts\python.exe" set "PYTHON_EXE=.build-venv\Scripts\python.exe"
 
-python -m PyInstaller ^
+"%PYTHON_EXE%" -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
