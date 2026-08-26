@@ -22,7 +22,7 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.6.4"
+VERSION = "0.6.5"
 FONT_TEXT = "Segoe UI Variable Text"
 FONT_DISPLAY = "Segoe UI Variable Text"
 FONT_ICON = "Segoe Fluent Icons"
@@ -940,7 +940,7 @@ class QuickTranslator:
         self.root.geometry("680x300")
         self.root.minsize(520, MIN_WINDOW_HEIGHT)
         self.root.configure(background=WINDOW_BG)
-        self.root.attributes("-topmost", False)
+        self.root.attributes("-topmost", self.cfg.always_on_top)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         self.root.bind("<Escape>", lambda event: self.hide())
         self.events: queue.Queue[tuple] = queue.Queue()
@@ -1036,6 +1036,13 @@ class QuickTranslator:
                 command=lambda selected=key: self.set_theme(selected),
             )
         self.menu_bar.add_cascade(label="主题(V)", menu=self.theme_menu, underline=3)
+
+        self.topmost_var = tk.BooleanVar(value=self.cfg.always_on_top)
+        self.window_menu = tk.Menu(self.menu_bar, tearoff=False)
+        self.window_menu.add_checkbutton(
+            label="始终置顶", variable=self.topmost_var, command=self.toggle_topmost,
+        )
+        self.menu_bar.add_cascade(label="窗口(W)", menu=self.window_menu, underline=3)
 
         self.settings_menu = tk.Menu(self.menu_bar, tearoff=False)
         self.settings_menu.add_command(label="打开设置…", command=self.open_settings)
@@ -1233,14 +1240,17 @@ class QuickTranslator:
 
     def _restore_topmost(self) -> None:
         if not self._quitting:
-            self.root.attributes("-topmost", False)
+            self.root.attributes("-topmost", self.cfg.always_on_top)
 
     def toggle_topmost(self) -> None:
-        self.cfg.always_on_top = not self.cfg.always_on_top
+        enabled = (
+            bool(self.topmost_var.get())
+            if hasattr(self, "topmost_var")
+            else not self.cfg.always_on_top
+        )
+        self.cfg.always_on_top = enabled
         self.cfg.save()
         self._restore_topmost()
-        self.pin_button.set_selected(self.cfg.always_on_top)
-        self.pin_button.set_tooltip("取消始终置顶" if self.cfg.always_on_top else "始终置顶")
         self.status.config(text="窗口已始终置顶" if self.cfg.always_on_top else "已取消始终置顶")
 
     def minimize_window(self) -> None:

@@ -80,7 +80,14 @@ class TranslationTests(unittest.TestCase):
         source = inspect.getsource(QuickTranslator._build_ui)
         self.assertIn("self.root.configure(menu=self.menu_bar)", source)
         self.assertIn("self.menu_bar.add_cascade", source)
+        self.assertIn("self.window_menu.add_checkbutton", source)
         self.assertNotIn("ttk.Menubutton", source)
+
+    def test_topmost_menu_state_is_persisted_without_custom_caption_button(self):
+        source = inspect.getsource(QuickTranslator.toggle_topmost)
+        self.assertIn("self.cfg.always_on_top = enabled", source)
+        self.assertIn("self.cfg.save()", source)
+        self.assertNotIn("pin_button", source)
 
     def test_streaming_chunks_do_not_resize_the_window(self):
         source = inspect.getsource(QuickTranslator.show_message)
