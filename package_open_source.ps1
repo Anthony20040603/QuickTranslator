@@ -21,9 +21,8 @@ New-Item -ItemType Directory -Path (Join-Path $stage "source") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "portable") -Force | Out-Null
 
 $sourceFiles = @(
-    ".gitignore", "app.py", "test_app.py", "requirements.txt", "README.md",
-    "LICENSE", "NOTICE.md", "SECURITY.md", "CHANGELOG.md", "OPEN_SOURCE_RELEASE.md",
-    ".github\workflows\tests.yml", "run.bat", "build_portable.bat",
+    ".gitignore", "app.py", "qt_app.py", "test_app.py", "requirements.txt", "README.md",
+    "LICENSE", "OPEN_SOURCE_RELEASE.md", "run.bat", "build_portable.bat",
     "package_release.ps1", "package_open_source.ps1", "install.bat",
     "install.ps1", "uninstall.ps1", "assets\app_icon.png"
 )

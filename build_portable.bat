@@ -2,10 +2,8 @@
 setlocal
 cd /d "%~dp0"
 set PYTHONNOUSERSITE=1
-set "PYTHON_EXE=python"
-if exist ".build-venv\Scripts\python.exe" set "PYTHON_EXE=.build-venv\Scripts\python.exe"
 
-"%PYTHON_EXE%" -m PyInstaller ^
+python -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
@@ -18,7 +16,7 @@ if exist ".build-venv\Scripts\python.exe" set "PYTHON_EXE=.build-venv\Scripts\py
   --exclude-module psutil ^
   --exclude-module setuptools ^
   --exclude-module pkg_resources ^
-  app.py
+  qt_app.py
 
 if errorlevel 1 exit /b 1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0package_release.ps1"

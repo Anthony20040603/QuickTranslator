@@ -1,97 +1,72 @@
-# QuickTranslator
+# 划词翻译
 
-一个轻量的 Windows 划词 AI 翻译工具。选中任意软件中的文字，按住 `Ctrl` 并快速连按两次 `C`，程序会读取选区、调用翻译模型，并在鼠标附近流式显示译文。
+一个轻量的 Windows 划词翻译工具。选中任意软件中的文字，按住 `Ctrl` 并快速连按两次 `C`，程序会读取选区、调用 AI 翻译，并在光标附近流式显示译文。
 
-本项目基于 [chyThor/QuickTranslator](https://github.com/chyThor/QuickTranslator) 继续开发。Fork 关系和提交历史用于保留原项目来源；后续新增功能、界面调整和发布包由本仓库维护。
+## 快速开始
 
-## 功能
+1. 安装 Python 3.10 或更高版本（安装时勾选 **Add Python to PATH**）。
+2. 双击 `run.bat`。
+3. 点击“设置”，填入 API Key 后保存。
+4. 在浏览器、PDF 阅读器或聊天软件中选中文字，按住 `Ctrl` 并快速连按两次 `C`。
 
-- Windows 全局划词翻译，默认快捷键为“按住 Ctrl，双击 C”
-- 智谱 `glm-4.7-flash` 与阿里云百炼 Qwen-MT
-- 精准 Plus / 极速 Turbo 模型切换
-- 科研领域提示、术语表和本地翻译记忆
-- Windows 原生菜单栏与属性页式设置窗口
-- 跟随 Windows、浅色和深色主题
-- 可编辑译文、确认译文、复制结果和始终置顶
-- 常驻系统托盘，翻译窗口自动适应内容高度
+默认快捷键可在“设置 → 快捷键”中更改，可选 `Ctrl + Alt + T`、双击 `Alt` 或原来的双击 `Ctrl`。`Fn` 通常由键盘硬件层处理，Windows 程序无法稳定监听。
 
-## 下载与使用
+## 外观与主题
 
-推荐从仓库的 [Releases](https://github.com/Anthony20040603/QuickTranslator/releases) 下载最新稳定版便携包，解压后运行 `QuickTranslator.exe`。
+界面与 ZenNotes 使用同一套 PySide6 + PySide6-Fluent-Widgets 实现：主窗口直接使用 `MSFluentWindow`，左侧导航直接使用 `navigationInterface.addItem`，译文区域使用 Qt 文本编辑器。按钮的悬停、按压、选中动画、Mica、滚动条和窗口控制按钮均由该 Fluent 组件库提供，不再由程序手工绘制。程序图标只用于 EXE、窗口标题栏和系统托盘。
 
-首次使用：
+在“设置 → 外观”中可选择“跟随 Windows”“浅色”或“深色”。默认跟随 Windows；系统切换应用深浅色后，正在运行的 QuickTranslator 会自动更新并记住设置。
 
-1. 打开托盘菜单中的“设置”。
-2. 填写智谱 API Key，或填写阿里云百炼 API Key。
-3. 在浏览器、PDF 阅读器等软件中选中文字。
-4. 按住 `Ctrl`，快速连按两次 `C`。
+## 在另一台 Windows 电脑使用
 
-快捷键可以在设置中改为 `Ctrl + Alt + T`、双击 `Alt` 或双击 `Ctrl`。`Fn` 通常由键盘硬件层处理，Windows 程序无法稳定监听。
+运行 `build_portable.bat` 后，将 `dist\QuickTranslator` 整个文件夹复制到另一台电脑，双击其中的 `QuickTranslator.exe`。不能只复制 EXE，因为文件夹内还包含程序运行库。也可以直接发送项目生成的 `QuickTranslator-portable.zip`，解压后运行。
 
-## 翻译模型
+API Key 不会打进便携包；请在新电脑的托盘菜单“设置”中重新填写。若要迁移术语、设置和翻译记忆，可复制 `%APPDATA%\QuickTranslator`，但其中包含明文 API Key，只应通过可信的加密方式传输。
 
-### 智谱 GLM
+### 安装、开机启动和开始菜单
 
-- 默认模型：`glm-4.7-flash`
-- 备用模型：`glm-4-flash`
-- API 地址兼容 OpenAI Chat Completions 格式
+解压完整便携包后，双击 `install.bat`。程序会先校验发布清单和全部文件，随后安装到 `%LOCALAPPDATA%\Programs\QuickTranslator`，并自动创建开始菜单入口和当前用户的开机启动快捷方式。若需要固定到开始屏幕，在开始菜单搜索“QuickTranslator”，右键选择“固定到开始屏幕”。
 
-### 阿里云百炼 Qwen-MT
+拿到新版本后重新运行其中的 `install.bat` 即可升级。升级器会先在暂存目录运行自检，保留一个上一版本，并在新版本启动失败时自动回滚；不会删除 `%APPDATA%\QuickTranslator` 中的设置和翻译记忆。卸载时运行安装目录中的 `uninstall.ps1`。
+
+程序启动后会常驻 Windows 系统托盘，不占用任务栏。关闭翻译窗口只会隐藏程序；在托盘图标上右键可以重新显示、打开设置或彻底退出。
+
+翻译窗口会根据译文长度自动调整高度；长内容使用 Fluent 样式滚动条浏览。标题栏保留标准的最小化、最大化和关闭按钮，窗口四边可按正常 Windows 窗口方式缩放。快速双击 `Shift` 可以立即找回翻译窗口。
+
+科研翻译可在“设置”中填写研究领域和术语表。术语表使用 `原文=指定译文` 格式，多项之间用分号分隔，例如：`cell culture=细胞培养; power=功效（统计学）`。选取完整句子或段落通常比只选单个词更容易得到符合语境的译法。
+
+程序默认使用智谱开放平台：
+
+- API 地址：`https://open.bigmodel.cn/api/paas/v4/chat/completions`
+- 模型：`glm-4.7-flash`（免费文本模型）
+- 备用模型：`glm-4-flash`（首选模型拥堵时自动切换）
+
+## 专业 Qwen-MT 模式
+
+设置中填写阿里云百炼 API Key 后，程序会优先使用专用翻译模型：
 
 - 精准模式：`qwen-mt-plus`
 - 极速模式：`qwen-mt-turbo`
-- 未配置百炼或调用失败时自动回退到 GLM
+- 百炼未配置或请求失败：自动切回现有 GLM 通道
 
-程序会自动判断中译英或英译中，并将科研领域、术语表和相关翻译记忆传给 Qwen-MT。
+建议在百炼控制台复制北京区域 Workspace 专属的完整 Chat Completions 地址。主窗口左侧的速度按钮可切换“精准 Plus / 极速 Turbo”。程序会自动识别中译英或英译中，并把科研领域、术语表和相关翻译记忆通过 Qwen-MT 的原生参数传入。
 
-## 从源码运行
+译文允许直接编辑。人工修订后点击“确认译文”，原文和最终译文会保存到 `%APPDATA%\QuickTranslator\translation_memory.json`；以后翻译相似内容时会选取最相关的 5 条作为翻译记忆。该文件仅保存在本机。
 
-需要 Windows 和 Python 3.10 或更高版本：
+也可使用任何兼容 OpenAI Chat Completions 格式的服务，例如 DeepSeek、通义千问等；填写对应的 API 地址和模型名即可。
 
-```powershell
-python -m pip install -r requirements.txt
-python app.py
-```
+## API Key 与隐私
 
-运行测试：
+设置保存在 `%APPDATA%\QuickTranslator\config.json`。API Key 不会发送给翻译服务以外的任何地方。选中的文字会发送给你配置的模型服务，敏感内容请谨慎使用。
 
-```powershell
-python -m unittest -v test_app.py
-```
+也可以不在配置文件中保存密钥，启动前设置环境变量 `TRANSLATOR_API_KEY`；只有配置文件中尚无密钥时才会读取它。
 
-构建便携版：
+## 当前限制
 
-```powershell
-.\build_portable.bat
-```
+- 默认触发方式为按住 `Ctrl` 后快速连按两次 `C`，也可在设置中更改。
+- 依赖目标软件支持 `Ctrl+C` 复制选区。
+- MVP 仅支持 Windows。
 
-## 版本说明
+## 界面实现致谢
 
-| 版本 | 定位 |
-| --- | --- |
-| 0.5.2 | 早期公开基线 |
-| 0.5.3 | 默认快捷键改为按住 Ctrl 双击 C，减少系统功能冲突 |
-| 0.6.0 | Fluent 风格界面与模型服务预设 |
-| 0.6.1 | Fluent 界面、窗口尺寸与长文本显示改进 |
-| 0.6.3 | 回归轻量 Tkinter 与记事本式布局 |
-| 0.6.4 | 使用 Windows 原生菜单栏，修复流式长文本闪烁 |
-| 0.6.5 | 在原生菜单中加入可持久化的始终置顶开关 |
-| 0.6.6 | 设置窗口改为 Windows 属性页式原生控件，并适配高 DPI |
-| 0.6.7 | 修复高 DPI 下勾选标记遮挡菜单文字，当前稳定版 |
-| 0.7.0 | ZenNotes / Qt Fluent 界面实验版，体积较大，作为预览保留 |
-
-完整变化见 [CHANGELOG.md](CHANGELOG.md)。仓库没有 0.6.2 源码或发布产物，因此版本号保持空缺。
-
-## 隐私与安全
-
-- API Key 保存在 `%APPDATA%\QuickTranslator\config.json`，不会写入源码仓库或发布包。
-- 翻译记忆保存在 `%APPDATA%\QuickTranslator\translation_memory.json`，仅供本机使用。
-- 选中的文字会发送到你配置的翻译服务，请勿翻译不应离开本机的敏感内容。
-- `.gitignore` 会排除配置、翻译记忆、环境变量文件、构建目录和压缩包。
-- 提交前可运行 `package_open_source.ps1`；脚本会检查常见私密文件与疑似密钥。
-
-安全注意事项与漏洞报告方式见 [SECURITY.md](SECURITY.md)。
-
-## 许可证与来源
-
-项目使用 MIT License，详见 [LICENSE](LICENSE)。二次开发请保留许可证和原项目来源说明。更多信息见 [NOTICE.md](NOTICE.md)。
+界面结构参考 [ZenNotes](https://github.com/rohankishore/ZenNotes)，并使用其采用的 [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) 组件体系。

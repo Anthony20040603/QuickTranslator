@@ -22,12 +22,10 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.6.7"
+VERSION = "0.7.0"
 FONT_TEXT = "Segoe UI Variable Text"
 FONT_DISPLAY = "Segoe UI Variable Text"
 FONT_ICON = "Segoe Fluent Icons"
-MENU_FONT = ("Segoe UI", 10)
-MENU_CHECK_PAD = "    "
 CONFIG_PATH = Path(os.getenv("APPDATA", Path.home())) / "QuickTranslator" / "config.json"
 TM_PATH = CONFIG_PATH.with_name("translation_memory.json")
 ICON_PATH = Path(__file__).resolve().parent / "assets" / "app_icon.png"
@@ -35,8 +33,7 @@ ERROR_ALREADY_EXISTS = 183
 INSTANCE_MUTEX_NAME = "Local\\QuickTranslatorSingleInstance"
 DEFAULT_HOTKEY = "ctrl_double_c"
 TITLEBAR_HEIGHT = 32
-MENU_CLIENT_HEIGHT = 0
-MIN_WINDOW_HEIGHT = 190
+MIN_WINDOW_HEIGHT = 176
 HOTKEY_LABELS = {
     "ctrl_double_c": "按住 Ctrl，双击 C",
     "ctrl_alt_t": "Ctrl + Alt + T",
@@ -74,25 +71,6 @@ def apply_palette(theme: str) -> None:
 
 
 apply_palette("light")
-
-
-def enable_high_dpi() -> None:
-    """Let Windows and Tk agree on menu metrics at 125–300% scaling."""
-    try:
-        user32 = ctypes.windll.user32
-        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-        user32.SetProcessDpiAwarenessContext.restype = ctypes.wintypes.BOOL
-        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-            return
-    except (AttributeError, OSError):
-        pass
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except (AttributeError, OSError):
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except (AttributeError, OSError):
-            pass
 
 
 def normalize_hotkey(value: object) -> str:
@@ -137,13 +115,13 @@ def resolve_theme(value: object) -> str:
 
 
 def calculate_panel_height(display_lines: int, line_height: int) -> int:
-    """Fit the editable text and the compact action row."""
+    """Fit text, action row and the rounded panel's inner padding."""
     return 84 + max(1, display_lines) * max(16, line_height)
 
 
 def calculate_window_height(display_lines: int, line_height: int, screen_height: int) -> int:
-    """Fit the translation area; the native menu belongs to the Windows frame."""
-    content_height = calculate_panel_height(display_lines, line_height) + MENU_CLIENT_HEIGHT
+    """Fit the titlebar, floating panel and its outer Mica margins."""
+    content_height = calculate_panel_height(display_lines, line_height) + TITLEBAR_HEIGHT + 24
     return min(int(screen_height * 0.72), max(MIN_WINDOW_HEIGHT, content_height))
 
 
@@ -162,8 +140,8 @@ def _colorref(hex_color: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
-def apply_fluent_window(window: tk.Misc, backdrop_type: int = 0) -> None:
-    """Keep the normal Windows frame while matching its light or dark caption."""
+def apply_fluent_window(window: tk.Misc, backdrop_type: int = 2) -> None:
+    """Ask Windows 11 to apply rounded corners, Mica and native caption colors."""
     try:
         window.update_idletasks()
         client_hwnd = window.winfo_id()
@@ -184,10 +162,10 @@ def apply_fluent_window(window: tk.Misc, backdrop_type: int = 0) -> None:
 
         set_int(20, 1 if IS_DARK else 0)  # DWMWA_USE_IMMERSIVE_DARK_MODE
         set_int(33, 2)  # DWMWA_WINDOW_CORNER_PREFERENCE: round
-        set_int(34, -1)  # Use the normal Windows frame and separator.
-        set_int(35, -1)
+        set_int(34, -2)  # DWMWA_COLOR_NONE: remove the caption/client separator.
+        set_int(35, -1)  # Keep the Mica caption instead of painting a flat color.
         set_int(36, -1)
-        set_int(38, backdrop_type)  # Use the normal system backdrop.
+        set_int(38, backdrop_type)  # DWMWA_SYSTEMBACKDROP_TYPE: Mica
     except (AttributeError, OSError, tk.TclError):
         # Older Windows versions keep the same Fluent-inspired fallback palette.
         pass
@@ -943,7 +921,6 @@ def translate_qwen_stream(
 class QuickTranslator:
     def __init__(self) -> None:
         self.cfg = Config.load()
-        self._ui_smoke_test = "--ui-smoke-test" in sys.argv
         self._executable_name = Path(sys.executable).stem.lower()
         preview_theme = (
             "dark" if "darkpreview" in self._executable_name
@@ -953,14 +930,11 @@ class QuickTranslator:
         self._preview_theme = preview_theme
         self._resolved_theme = preview_theme or resolve_theme(self.cfg.theme)
         apply_palette(self._resolved_theme)
-        enable_high_dpi()
         self.root = tk.Tk()
-        if self._ui_smoke_test:
-            self.root.withdraw()
         self.root.title("QuickTranslator")
         self.root.attributes("-alpha", 1.0)
-        self.root.geometry("680x300")
-        self.root.minsize(520, MIN_WINDOW_HEIGHT)
+        self.root.geometry("640x410")
+        self.root.minsize(480, MIN_WINDOW_HEIGHT)
         self.root.configure(background=WINDOW_BG)
         self.root.attributes("-topmost", self.cfg.always_on_top)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
@@ -977,6 +951,8 @@ class QuickTranslator:
         self._memories = load_translation_memory()
         self._user_resized = False
         self._resize_job = None
+        self._resize_animation_job = None
+        self._resize_target = None
         self._scrollbar_job = None
         self._edge_resize = None
         self._cursor_widget = None
@@ -985,11 +961,12 @@ class QuickTranslator:
         self._quitting = False
         self._tray_image = self._make_tray_image()
         self._build_ui()
+        apply_borderless_window(self.root)
+        self._bind_edge_resize()
         self.root.bind("<Configure>", self._track_native_resize, add="+")
-        if not self._ui_smoke_test:
-            self._start_tray()
-            self.root.after(100, self._poll_events)
-            self.root.after(2500, self._poll_system_theme)
+        self._start_tray()
+        self.root.after(100, self._poll_events)
+        self.root.after(2500, self._poll_system_theme)
         settings_preview = "--settings-preview" in sys.argv or "settingspreview" in self._executable_name
         short_content_preview = "shortcontentpreview" in self._executable_name
         content_preview = (
@@ -999,7 +976,7 @@ class QuickTranslator:
             "--ui-preview" in sys.argv or settings_preview or self._executable_name.endswith("preview")
         )
         if preview_mode:
-            self.root.after(40, lambda: apply_fluent_window(self.root, 0))
+            self.root.after(40, lambda: apply_fluent_window(self.root, 2))
             if settings_preview:
                 self.root.after(250, self.open_settings)
             if content_preview:
@@ -1018,134 +995,124 @@ class QuickTranslator:
                 self.root.after(200, lambda: self.status.config(text="翻译完成"))
         else:
             self.root.after(500, self.hide)
-            self.root.after(40, lambda: apply_fluent_window(self.root, 0))
-        if not self._ui_smoke_test:
-            threading.Thread(target=self._translation_hotkey_loop, daemon=True).start()
-            threading.Thread(target=self._double_shift_loop, daemon=True).start()
+            self.root.after(40, lambda: apply_fluent_window(self.root, 2))
+        threading.Thread(target=self._translation_hotkey_loop, daemon=True).start()
+        threading.Thread(target=self._double_shift_loop, daemon=True).start()
 
     def _build_ui(self) -> None:
         self._configure_fluent_styles()
         self._window_icon = ImageTk.PhotoImage(
             self._tray_image.resize((64, 64), Image.Resampling.LANCZOS)
         )
+        self._title_icon = ImageTk.PhotoImage(
+            self._tray_image.resize((18, 18), Image.Resampling.LANCZOS)
+        )
         self.root.iconphoto(True, self._window_icon)
 
-        old_menu = getattr(self, "menu_bar", None)
-        if old_menu is not None:
-            try:
-                old_menu.destroy()
-            except tk.TclError:
-                pass
-        self.menu_bar = tk.Menu(self.root, tearoff=False, font=MENU_FONT)
-
-        self.mode_var = tk.StringVar(value=self.cfg.translation_mode)
-        self.model_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
-        self.model_menu.add_radiobutton(
-            label=f"{MENU_CHECK_PAD}精准 Plus", variable=self.mode_var, value="accurate",
-            command=lambda: self.set_mode("accurate"),
+        titlebar = tk.Frame(
+            self.root, background=WINDOW_BG, height=TITLEBAR_HEIGHT,
+            borderwidth=0, highlightthickness=0,
         )
-        self.model_menu.add_radiobutton(
-            label=f"{MENU_CHECK_PAD}极速 Turbo", variable=self.mode_var, value="fast",
-            command=lambda: self.set_mode("fast"),
+        titlebar.pack(fill="x")
+        titlebar.pack_propagate(False)
+        title_icon = tk.Label(
+            titlebar, image=self._title_icon, background=WINDOW_BG,
+            borderwidth=0, highlightthickness=0,
         )
-        self.menu_bar.add_cascade(label="模型(M)", menu=self.model_menu, underline=3)
+        title_icon.pack(side="left", padx=(10, 7))
+        title_text = tk.Label(
+            titlebar, text="QuickTranslator", background=WINDOW_BG, foreground=TEXT,
+            font=(FONT_TEXT, 10), borderwidth=0, highlightthickness=0,
+        )
+        title_text.pack(side="left")
 
-        self.theme_var = tk.StringVar(value=normalize_theme(self.cfg.theme))
-        self.theme_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
-        for key in ("system", "light", "dark"):
-            self.theme_menu.add_radiobutton(
-                label=f"{MENU_CHECK_PAD}{THEME_LABELS[key]}",
-                variable=self.theme_var, value=key,
-                command=lambda selected=key: self.set_theme(selected),
+        close_button = CaptionButton(
+            titlebar, "\uE8BB", self.hide, role="close", tooltip="关闭",
+        )
+        close_button.pack(side="right")
+        self.pin_button = CaptionButton(
+            titlebar, "\uE718", self.toggle_topmost,
+            tooltip="取消始终置顶" if self.cfg.always_on_top else "始终置顶",
+            selected=self.cfg.always_on_top,
+        )
+        self.pin_button.pack(side="right")
+        CaptionButton(
+            titlebar, "\uE921", self.minimize_window, tooltip="最小化",
+        ).pack(side="right")
+        for drag_widget in (titlebar, title_icon, title_text):
+            drag_widget.bind("<ButtonPress-1>", self._start_drag)
+            drag_widget.bind("<B1-Motion>", self._drag_window)
+
+        workspace = tk.Frame(self.root, background=WINDOW_BG)
+        workspace.pack(fill="both", expand=True)
+
+        rail = tk.Frame(workspace, background=WINDOW_BG, width=58)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+
+        def rail_item(
+            glyph: str, tooltip: str, command, *, selected: bool = False,
+            parent: tk.Misc = rail,
+        ) -> FluentButton:
+            item = tk.Frame(parent, background=WINDOW_BG, width=58, height=42)
+            item.pack(fill="x", pady=(5 if selected else 1, 0))
+            item.pack_propagate(False)
+            button = FluentButton(
+                item, glyph, command, kind="selected" if selected else "subtle",
+                width=40, height=36, icon=True, tooltip=tooltip,
             )
-        self.menu_bar.add_cascade(label="主题(V)", menu=self.theme_menu, underline=3)
+            button.pack(padx=9, pady=3)
+            return button
 
-        self.topmost_var = tk.BooleanVar(value=self.cfg.always_on_top)
-        self.window_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
-        self.window_menu.add_checkbutton(
-            label=f"{MENU_CHECK_PAD}始终置顶",
-            variable=self.topmost_var, command=self.toggle_topmost,
-        )
-        self.menu_bar.add_cascade(label="窗口(W)", menu=self.window_menu, underline=3)
+        rail_item("\uE70F", "翻译", lambda: None, selected=True)
+        self.mode_button = rail_item("\uE945", self._mode_label(), self.toggle_mode)
 
-        self.settings_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
-        self.settings_menu.add_command(label="打开设置…", command=self.open_settings)
-        self.settings_menu.add_separator()
-        self.settings_menu.add_command(
-            label="翻译服务", command=lambda: self.open_settings("qwen"),
-        )
-        self.settings_menu.add_command(
-            label="科研术语", command=lambda: self.open_settings("research"),
-        )
-        self.settings_menu.add_command(
-            label="快捷键", command=lambda: self.open_settings("hotkey"),
-        )
-        self.settings_menu.add_command(
-            label="外观", command=lambda: self.open_settings("appearance"),
-        )
-        self.menu_bar.add_cascade(label="设置(S)", menu=self.settings_menu, underline=3)
-        self.root.configure(menu=self.menu_bar)
+        rail_bottom = tk.Frame(rail, background=WINDOW_BG)
+        rail_bottom.pack(side="bottom", fill="x", pady=(0, 7))
+        rail_item("\uE713", "设置", self.open_settings, parent=rail_bottom)
 
-        panel = tk.Frame(
-            self.root, background=SURFACE, borderwidth=0, highlightthickness=0,
-        )
+        content = tk.Frame(workspace, background=WINDOW_BG, borderwidth=0)
+        content.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
+
+        panel = RoundedFrame(content, fill=SURFACE, outline=BORDER, radius=12, padding=14)
         self.translation_panel = panel
         panel.pack(fill="both", expand=True)
-        panel_body = panel
+        panel_body = panel.container
         panel_body.rowconfigure(0, weight=1)
         panel_body.columnconfigure(0, weight=1)
         self.output = tk.Text(
-            panel_body, wrap="char", padx=12, pady=10, height=4, font=(FONT_TEXT, 11),
+            panel_body, wrap="char", padx=2, pady=4, height=4, font=(FONT_TEXT, 11),
             relief="flat", borderwidth=0, highlightthickness=0,
             background=SURFACE, foreground=TEXT, insertbackground=TEXT,
-            selectbackground=SELECTION, spacing1=3, spacing3=3, undo=True,
-            insertwidth=1, takefocus=1,
+            selectbackground=SELECTION, spacing1=3, spacing3=3, undo=False,
+            insertwidth=0, takefocus=0,
             yscrollcommand=self._on_output_scroll,
         )
         self.output.grid(row=0, column=0, sticky="nsew")
         self.scrollbar = FluentScrollbar(panel_body, command=self.output.yview)
 
-        bottom = tk.Frame(panel_body, background=SURFACE, height=48)
-        bottom.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(4, 10))
+        bottom = tk.Frame(panel_body, background=SURFACE, height=38)
+        bottom.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.status = tk.Label(
             bottom, text="", foreground=MUTED, background=SURFACE,
             font=(FONT_TEXT, 9), anchor="w",
         )
         self.status.pack(side="left", fill="x", expand=True)
-        ttk.Button(
-            bottom, text="复制", command=self.copy_result, style="Action.TButton",
-        ).pack(side="right", padx=(6, 0))
-        ttk.Button(
-            bottom, text="确认", command=self.confirm_translation, style="Primary.TButton",
+        self._fluent_button(
+            bottom, "\uE8C8", self.copy_result, "secondary",
+            icon=True, width=36, tooltip="复制译文",
         ).pack(side="right")
+        self._fluent_button(
+            bottom, "\uE73E", self.confirm_translation, "primary",
+            icon=True, width=36, tooltip="确认译文",
+        ).pack(side="right", padx=(0, 7))
 
     def _configure_fluent_styles(self) -> None:
         style = ttk.Style(self.root)
-        candidates = ("clam",) if IS_DARK else ("vista", "winnative", "clam")
-        for candidate in candidates:
-            if candidate in style.theme_names():
-                style.theme_use(candidate)
-                break
-        style.configure("Action.TButton", padding=(12, 5))
-        style.configure("Primary.TButton", padding=(12, 5))
-        if IS_DARK:
-            for name in ("Action.TButton",):
-                style.configure(
-                    name, background=CONTROL_FILL, foreground=TEXT,
-                    bordercolor=BORDER_STRONG, lightcolor=BORDER_STRONG,
-                    darkcolor=BORDER_STRONG,
-                )
-                style.map(
-                    name, background=[("active", CONTROL_HOVER), ("pressed", CONTROL_PRESSED)],
-                )
-            style.configure(
-                "Primary.TButton", background=ACCENT, foreground=ACCENT_TEXT,
-                bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
-            )
-            style.map(
-                "Primary.TButton",
-                background=[("active", ACCENT_HOVER), ("pressed", ACCENT_PRESSED)],
-            )
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
         style.configure(
             "Fluent.TEntry", fieldbackground=CONTROL_FILL, foreground=TEXT,
             bordercolor=BORDER_STRONG, lightcolor=BORDER_STRONG, darkcolor=BORDER_STRONG,
@@ -1181,7 +1148,14 @@ class QuickTranslator:
         try:
             first, last = self.output.yview()
             self.scrollbar.set(first, last)
-            overflowing = float(first) > 0.0001 or float(last) < 0.9999
+            first_line = self.output.dlineinfo("1.0")
+            last_line = self.output.dlineinfo("end-1c")
+            widget_height = self.output.winfo_height()
+            overflowing = (
+                first_line is None or last_line is None
+                or first_line[1] < 0
+                or last_line[1] + last_line[3] > widget_height
+            )
         except tk.TclError:
             return
         if overflowing and not self.scrollbar.winfo_ismapped():
@@ -1233,48 +1207,27 @@ class QuickTranslator:
         if current_text:
             self.output.delete("1.0", "end")
             self.output.insert("1.0", current_text)
-        self.root.after(20, lambda: apply_fluent_window(self.root, 0))
+        self.root.after(20, lambda: apply_fluent_window(self.root, 2))
 
     def _mode_label(self) -> str:
         return "精准 Plus" if self.cfg.translation_mode == "accurate" else "极速 Turbo"
 
-    def set_mode(self, mode: str) -> None:
-        if mode not in {"accurate", "fast"}:
-            return
-        self.cfg.translation_mode = mode
-        if hasattr(self, "mode_var"):
-            self.mode_var.set(mode)
+    def toggle_mode(self) -> None:
+        self.cfg.translation_mode = "fast" if self.cfg.translation_mode == "accurate" else "accurate"
+        self.mode_button.set_tooltip(self._mode_label())
         self.cfg.save()
         self.status.config(text=f"已切换为 {self._mode_label()}")
-
-    def toggle_mode(self) -> None:
-        mode = "fast" if self.cfg.translation_mode == "accurate" else "accurate"
-        self.set_mode(mode)
-
-    def toggle_theme(self) -> None:
-        resolved = "light" if self._resolved_theme == "dark" else "dark"
-        self.set_theme(resolved)
-
-    def set_theme(self, theme: str) -> None:
-        theme = normalize_theme(theme)
-        self.cfg.theme = theme
-        self.cfg.save()
-        self._apply_resolved_theme(resolve_theme(theme))
-        self.status.config(text=f"主题：{THEME_LABELS[theme]}")
 
     def _restore_topmost(self) -> None:
         if not self._quitting:
             self.root.attributes("-topmost", self.cfg.always_on_top)
 
     def toggle_topmost(self) -> None:
-        enabled = (
-            bool(self.topmost_var.get())
-            if hasattr(self, "topmost_var")
-            else not self.cfg.always_on_top
-        )
-        self.cfg.always_on_top = enabled
+        self.cfg.always_on_top = not self.cfg.always_on_top
         self.cfg.save()
         self._restore_topmost()
+        self.pin_button.set_selected(self.cfg.always_on_top)
+        self.pin_button.set_tooltip("取消始终置顶" if self.cfg.always_on_top else "始终置顶")
         self.status.config(text="窗口已始终置顶" if self.cfg.always_on_top else "已取消始终置顶")
 
     def minimize_window(self) -> None:
@@ -1643,17 +1596,18 @@ class QuickTranslator:
             self.output.insert("end", message[common:])
         if not resize:
             self.output.see("end")
-        if resize and not self._user_resized:
-            if self._resize_job is not None:
+        if not self._user_resized:
+            if resize and self._resize_job is not None:
                 self.root.after_cancel(self._resize_job)
                 self._resize_job = None
-            self._resize_job = self.root.after_idle(self._auto_size_to_content)
-        elif self._scrollbar_job is None:
-            self._scrollbar_job = self.root.after_idle(self._refresh_output_scrollbar)
+            # Measure at most once per short frame group. Streaming therefore grows
+            # continuously, without doing an expensive layout pass for every token.
+            if self._resize_job is None:
+                self._resize_job = self.root.after(0 if resize else 70, self._auto_size_to_content)
 
     def show_translation(self, text: str, final: bool = False) -> None:
         rendered = normalize_translation_output(text, self._current_source)
-        # Streaming only updates text. Resize once after the final chunk to avoid flicker.
+        # Chunk redraws are coalesced; height follows them through a separate animation.
         self.show_message(rendered, resize=final)
 
     def _auto_size_to_content(self) -> None:
@@ -1677,17 +1631,37 @@ class QuickTranslator:
         target_height = calculate_window_height(display_lines, line_height, screen_height)
         panel_height = min(
             calculate_panel_height(display_lines, line_height),
-            target_height - MENU_CLIENT_HEIGHT,
+            target_height - TITLEBAR_HEIGHT - 24,
         )
         if hasattr(self, "translation_panel"):
-            self.translation_panel.configure(height=max(120, panel_height))
-            self.translation_panel.pack_configure(fill="both", expand=True)
+            self.translation_panel.configure(height=max(100, panel_height))
+            self.translation_panel.pack_configure(fill="x", expand=False)
         width = max(520, self.root.winfo_width())
         x, y = self.root.winfo_x(), self.root.winfo_y()
         target_y = min(y, screen_height - target_height - 55)
-        self.root.geometry(f"{width}x{target_height}+{max(0, x)}+{max(0, target_y)}")
+        self._resize_target = (target_height, max(0, target_y))
+        if self._resize_animation_job is None:
+            self._animate_height()
+
+    def _animate_height(self) -> None:
+        self._resize_animation_job = None
+        if self._user_resized or self.root.state() == "withdrawn" or not self._resize_target:
+            return
+        target_height, target_y = self._resize_target
+        height, y = self.root.winfo_height(), self.root.winfo_y()
+        # Ease toward the latest target; a changing stream simply updates that target.
+        next_height = height + max(-18, min(18, round((target_height - height) * 0.28)))
+        next_y = y + max(-18, min(18, round((target_y - y) * 0.28)))
+        if abs(target_height - height) <= 2:
+            next_height = target_height
+        if abs(target_y - y) <= 2:
+            next_y = target_y
+        width, x = max(520, self.root.winfo_width()), max(0, self.root.winfo_x())
+        self.root.geometry(f"{width}x{next_height}+{x}+{max(0, next_y)}")
         if self._scrollbar_job is None:
             self._scrollbar_job = self.root.after_idle(self._refresh_output_scrollbar)
+        if next_height != target_height or next_y != target_y:
+            self._resize_animation_job = self.root.after(16, self._animate_height)
 
     def copy_result(self) -> None:
         text = self.output.get("1.0", "end-1c")
@@ -1742,9 +1716,10 @@ class QuickTranslator:
 
         win = tk.Toplevel(self.root)
         self._settings_window = win
-        win.title("QuickTranslator 设置")
-        win.geometry("760x520")
-        win.minsize(680, 470)
+        win.title("QuickTranslator · 设置")
+        win.geometry("790x570")
+        win.minsize(700, 510)
+        win.configure(background=WINDOW_BG)
         win.transient(self.root)
         win.iconphoto(True, self._window_icon)
 
@@ -1759,117 +1734,146 @@ class QuickTranslator:
 
         win.protocol("WM_DELETE_WINDOW", close_settings)
         win.bind("<Escape>", lambda event: close_settings())
-        win.after(40, lambda: apply_fluent_window(win, 0))
+        win.after(40, lambda: apply_fluent_window(win))
 
-        body = ttk.Frame(win, padding=(12, 12, 12, 8))
+        body = tk.Frame(win, background=WINDOW_BG, padx=14, pady=14)
         body.pack(fill="both", expand=True)
-        notebook = ttk.Notebook(body)
-        notebook.pack(fill="both", expand=True)
+        navigation = tk.Frame(body, background=WINDOW_BG, width=58)
+        navigation.pack(side="left", fill="y", padx=(0, 16))
+        navigation.pack_propagate(False)
+        content_host = tk.Frame(body, background=WINDOW_BG)
+        content_host.pack(side="left", fill="both", expand=True)
 
         entries: dict[str, ttk.Entry] = {}
         hotkey_var = tk.StringVar(value=hotkey_label(self.cfg.hotkey))
         theme_var = tk.StringVar(value=theme_label(self.cfg.theme))
-        pages: dict[str, ttk.Frame] = {}
+        pages: dict[str, tk.Frame] = {}
+        navigation_buttons: dict[str, FluentButton] = {}
 
-        def make_page(key: str, tab_text: str, subtitle: str) -> ttk.Frame:
-            page = ttk.Frame(notebook, padding=16)
+        def make_page(key: str, title: str, subtitle: str) -> tuple[tk.Frame, tk.Frame]:
+            page = tk.Frame(content_host, background=WINDOW_BG)
             pages[key] = page
-            notebook.add(page, text=tab_text)
-            ttk.Label(
-                page, text=subtitle, wraplength=650, justify="left",
-            ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
-            page.columnconfigure(1, weight=1)
-            return page
+            tk.Label(
+                page, text=title, foreground=TEXT, background=WINDOW_BG,
+                font=(FONT_DISPLAY, 15, "bold"),
+            ).pack(anchor="w")
+            tk.Label(
+                page, text=subtitle, foreground=MUTED, background=WINDOW_BG,
+                font=(FONT_TEXT, 9), wraplength=520, justify="left",
+            ).pack(anchor="w", pady=(3, 14))
+            card = tk.Frame(page, background=WINDOW_BG, borderwidth=0, padx=0, pady=2)
+            card.pack(fill="x")
+            return page, card
 
-        def add_page(key: str, tab_text: str, subtitle: str, fields, note: str) -> None:
-            page = make_page(key, tab_text, subtitle)
+        def add_page(key: str, title: str, subtitle: str, fields, note: str) -> None:
+            _, card = make_page(key, title, subtitle)
             for row, (label, key, secret) in enumerate(fields):
-                ttk.Label(page, text=label).grid(
-                    row=row + 1, column=0, sticky="w", padx=(0, 18), pady=7,
-                )
-                entry = ttk.Entry(page, show="●" if secret else "")
+                tk.Label(
+                    card, text=label, foreground=TEXT, background=WINDOW_BG,
+                    font=(FONT_TEXT, 9),
+                ).grid(row=row, column=0, sticky="w", pady=9)
+                entry = ttk.Entry(card, show="•" if secret else "", style="Fluent.TEntry")
                 entry.insert(0, getattr(self.cfg, key))
-                entry.grid(row=row + 1, column=1, sticky="ew", pady=7)
+                entry.grid(row=row, column=1, sticky="ew", padx=(20, 0), pady=7)
                 entries[key] = entry
-            ttk.Separator(page, orient="horizontal").grid(
-                row=len(fields) + 1, column=0, columnspan=2, sticky="ew", pady=(14, 10),
-            )
-            ttk.Label(
-                page, text=note, wraplength=650, justify="left",
+            card.columnconfigure(1, weight=1)
+            tk.Label(
+                card, text=note, foreground=MUTED, background=WINDOW_BG,
+                font=(FONT_TEXT, 9), wraplength=510, justify="left",
             ).grid(
-                row=len(fields) + 2, column=0, columnspan=2, sticky="w",
+                row=len(fields), column=0, columnspan=2, sticky="w", pady=(13, 4)
             )
 
-        appearance_page = make_page(
-            "appearance", "外观", "选择 QuickTranslator 使用的颜色模式。",
+        _, appearance_card = make_page(
+            "appearance", "外观", "让 QuickTranslator 与 Windows 保持一致，或固定使用一种外观",
         )
-        ttk.Label(appearance_page, text="应用主题").grid(
-            row=1, column=0, sticky="w", padx=(0, 18), pady=7,
-        )
+        tk.Label(
+            appearance_card, text="应用主题", foreground=TEXT, background=WINDOW_BG,
+            font=(FONT_TEXT, 9),
+        ).grid(row=0, column=0, sticky="w", pady=9)
         theme_box = ttk.Combobox(
-            appearance_page, textvariable=theme_var, values=list(THEME_LABELS.values()),
-            state="readonly",
+            appearance_card, textvariable=theme_var, values=list(THEME_LABELS.values()),
+            state="readonly", style="Fluent.TCombobox",
         )
-        theme_box.grid(row=1, column=1, sticky="ew", pady=7)
-        ttk.Separator(appearance_page, orient="horizontal").grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(14, 10),
-        )
-        ttk.Label(
-            appearance_page,
+        theme_box.grid(row=0, column=1, sticky="ew", padx=(20, 0), pady=9)
+        appearance_card.columnconfigure(1, weight=1)
+        tk.Label(
+            appearance_card,
             text=(
                 "“跟随 Windows”会读取系统的应用颜色设置；切换系统深浅色后，窗口会自动更新。"
                 "也可以在这里固定为浅色或深色。"
             ),
-            wraplength=650, justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
+            foreground=MUTED, background=WINDOW_BG, font=(FONT_TEXT, 9),
+            wraplength=510, justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(15, 4))
 
-        add_page("qwen", "百炼", "优先使用的百炼 Qwen-MT 专用翻译模型。", [
+        add_page("qwen", "百炼 Qwen-MT", "优先使用的专用翻译模型", [
             ("API 地址", "qwen_api_url", False), ("API Key", "qwen_api_key", True),
             ("精准模型", "accurate_model", False), ("极速模型", "fast_model", False),
         ], "推荐北京区域 Workspace 专属地址。未填写百炼 Key 时，程序会继续使用 GLM 备用通道。")
-        add_page("research", "科研翻译", "让译文遵循你的学科语境和术语偏好。", [
+        add_page("research", "科研翻译", "让译文遵循你的学科语境和术语偏好", [
             ("科研领域", "research_domain", False), ("英文领域提示", "domain_prompt", False),
             ("术语表", "glossary", False), ("GLM 目标语言", "target_language", False),
         ], "术语表示例：cell culture=细胞培养; power=统计功效。Qwen-MT 会自动判断中译英或英译中。")
-        add_page("glm", "备用 GLM", "百炼暂时不可用时使用的自动回退通道。", [
+        add_page("glm", "备用 GLM", "百炼暂时不可用时的自动回退通道", [
             ("API 地址", "api_url", False), ("API Key", "api_key", True),
             ("首选模型", "model", False), ("备用模型", "fallback_model", False),
         ], "百炼未配置或调用失败时自动使用该通道。现有智谱设置会被保留。")
 
-        shortcut_page = make_page(
-            "hotkey", "快捷键", "选择不与其他 Windows 功能冲突的翻译触发方式。",
+        _, shortcut_card = make_page(
+            "hotkey", "快捷键", "选择不与其他 Windows 功能冲突的翻译触发方式",
         )
-        ttk.Label(shortcut_page, text="翻译触发方式").grid(
-            row=1, column=0, sticky="w", padx=(0, 18), pady=7,
-        )
+        tk.Label(
+            shortcut_card, text="翻译触发方式", foreground=TEXT, background=WINDOW_BG,
+            font=(FONT_TEXT, 9),
+        ).grid(row=0, column=0, sticky="w", pady=9)
         hotkey_box = ttk.Combobox(
-            shortcut_page,
+            shortcut_card,
             textvariable=hotkey_var,
             values=list(HOTKEY_LABELS.values()),
             state="readonly",
+            style="Fluent.TCombobox",
         )
-        hotkey_box.grid(row=1, column=1, sticky="ew", pady=7)
-        ttk.Separator(shortcut_page, orient="horizontal").grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(14, 10),
-        )
-        ttk.Label(
-            shortcut_page,
+        hotkey_box.grid(row=0, column=1, sticky="ew", padx=(16, 0), pady=9)
+        shortcut_card.columnconfigure(1, weight=1)
+        tk.Label(
+            shortcut_card,
             text=(
                 "推荐“按住 Ctrl，双击 C”；与 Windows 复制操作一致，且不会触发双击 Ctrl 的鼠标定位。"
                 "Fn 通常由键盘硬件处理，无法被 Windows 程序稳定监听。"
             ),
-            wraplength=650, justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
+            foreground=MUTED, background=WINDOW_BG, font=(FONT_TEXT, 9),
+            wraplength=510, justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(15, 0))
 
         def select_page(key: str) -> None:
             if key not in pages:
                 key = "qwen"
-            notebook.select(pages[key])
+            for page in pages.values():
+                page.pack_forget()
+            pages[key].pack(fill="both", expand=True)
+            for item_key, button in navigation_buttons.items():
+                selected = item_key == key
+                button.set_kind("selected" if selected else "subtle")
 
         self._settings_select_page = select_page
+        navigation_items = [
+            ("appearance", "\uE790", "外观"),
+            ("qwen", "\uE753", "百炼 Qwen-MT"),
+            ("research", "\uE8D2", "科研翻译"),
+            ("glm", "\uE72C", "备用 GLM"),
+            ("hotkey", "\uE765", "快捷键"),
+        ]
+        for key, glyph, label in navigation_items:
+            button = FluentButton(
+                navigation, glyph, lambda item_key=key: select_page(item_key),
+                kind="subtle", width=40, height=40, icon=True, tooltip=label,
+            )
+            button.pack(padx=9, pady=3)
+            navigation_buttons[key] = button
         select_page(initial_page)
 
-        def save(close_after: bool) -> None:
+        def save() -> None:
             for key, entry in entries.items():
                 setattr(self.cfg, key, entry.get().strip())
             label_to_hotkey = {label: key for key, label in HOTKEY_LABELS.items()}
@@ -1881,19 +1885,16 @@ class QuickTranslator:
                 return
             self.cfg.save()
             status_text = f"设置已保存 · 选中文字后按 {hotkey_label(self.cfg.hotkey)}"
-            if close_after:
-                close_settings()
+            close_settings()
             self._apply_resolved_theme(resolve_theme(self.cfg.theme))
             self.status.config(text=status_text)
 
-        ttk.Separator(win, orient="horizontal").pack(fill="x")
-        footer = ttk.Frame(win, padding=(12, 10))
-        footer.pack(fill="x")
-        ttk.Button(footer, text="应用", command=lambda: save(False)).pack(side="right")
-        ttk.Button(footer, text="取消", command=close_settings).pack(
-            side="right", padx=(8, 8),
+        footer = tk.Frame(win, background=WINDOW_BG, padx=20)
+        footer.pack(fill="x", pady=(0, 16))
+        self._fluent_button(footer, "取消", close_settings, "secondary").pack(side="right")
+        self._fluent_button(footer, "保存设置", save, "primary").pack(
+            side="right", padx=(0, 8),
         )
-        ttk.Button(footer, text="确定", command=lambda: save(True)).pack(side="right")
         win.grab_set()
 
     def run(self) -> None:
@@ -1912,28 +1913,6 @@ def run_self_test() -> bool:
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
         raise SystemExit(0 if run_self_test() else 1)
-    if "--ui-smoke-test" in sys.argv:
-        smoke_app = QuickTranslator()
-        smoke_app.open_settings("appearance")
-        smoke_app.root.update_idletasks()
-        settings_widgets = []
-        pending = list(smoke_app._settings_window.winfo_children())
-        while pending:
-            widget = pending.pop()
-            settings_widgets.append(widget)
-            pending.extend(widget.winfo_children())
-        smoke_ok = (
-            str(smoke_app.root.cget("menu"))
-            and smoke_app.output.cget("relief") == "flat"
-            and int(smoke_app.output.cget("highlightthickness")) == 0
-            and any(isinstance(widget, ttk.Notebook) for widget in settings_widgets)
-            and smoke_app.model_menu.entrycget(0, "label").startswith(MENU_CHECK_PAD)
-            and smoke_app.theme_menu.entrycget(0, "label").startswith(MENU_CHECK_PAD)
-            and smoke_app.window_menu.entrycget(0, "label").startswith(MENU_CHECK_PAD)
-        )
-        smoke_app._quitting = True
-        smoke_app.root.destroy()
-        raise SystemExit(0 if smoke_ok else 1)
     executable_stem = Path(sys.executable).stem.lower()
     mutex_name = (
         f"{INSTANCE_MUTEX_NAME}-{executable_stem}"

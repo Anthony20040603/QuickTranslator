@@ -5,12 +5,13 @@ import unittest
 from unittest.mock import patch
 
 from app import (
-    Config, HotkeyDetector, INPUT, QuickTranslator, calculate_panel_height,
+    Config, HotkeyDetector, INPUT, calculate_panel_height,
     calculate_window_height, display_line_count,
     detect_translation_direction,
     hotkey_label, normalize_hotkey, normalize_pdf_layout, normalize_translation_output,
     normalize_theme, parse_glossary, resolve_theme, theme_label, translate_qwen_stream,
 )
+from qt_app import QuickTranslatorQt, QuickTranslatorWindow
 
 
 class FakeResponse:
@@ -69,41 +70,18 @@ class TranslationTests(unittest.TestCase):
 
     def test_capture_path_never_writes_or_clears_clipboard(self):
         capture_source = "\n".join([
-            inspect.getsource(QuickTranslator.capture_and_translate),
-            inspect.getsource(QuickTranslator._read_selection),
-            inspect.getsource(QuickTranslator._capture_after_hotkey_release),
+            inspect.getsource(QuickTranslatorQt.capture_and_translate),
+            inspect.getsource(QuickTranslatorQt._read_selection),
+            inspect.getsource(QuickTranslatorQt._capture_after_hotkey_release),
         ])
         self.assertNotIn("clipboard_clear", capture_source)
         self.assertNotIn("clipboard_append", capture_source)
 
-    def test_main_window_uses_native_windows_menu_bar(self):
-        source = inspect.getsource(QuickTranslator._build_ui)
-        self.assertIn("self.root.configure(menu=self.menu_bar)", source)
-        self.assertIn("self.menu_bar.add_cascade", source)
-        self.assertIn("self.window_menu.add_checkbutton", source)
-        self.assertIn("font=MENU_FONT", source)
-        self.assertIn("MENU_CHECK_PAD", source)
-        self.assertNotIn("ttk.Menubutton", source)
-
-    def test_settings_use_native_property_sheet_controls(self):
-        source = inspect.getsource(QuickTranslator.open_settings)
-        self.assertIn("ttk.Notebook", source)
-        self.assertIn('text="确定"', source)
-        self.assertIn('text="取消"', source)
-        self.assertIn('text="应用"', source)
-        self.assertNotIn("FluentButton", source)
-        self.assertNotIn("Fluent.TEntry", source)
-
-    def test_topmost_menu_state_is_persisted_without_custom_caption_button(self):
-        source = inspect.getsource(QuickTranslator.toggle_topmost)
-        self.assertIn("self.cfg.always_on_top = enabled", source)
-        self.assertIn("self.cfg.save()", source)
-        self.assertNotIn("pin_button", source)
-
-    def test_streaming_chunks_do_not_resize_the_window(self):
-        source = inspect.getsource(QuickTranslator.show_message)
-        self.assertIn("if resize and not self._user_resized", source)
-        self.assertNotIn("else 70", source)
+    def test_qt_ui_uses_zennotes_navigation_api(self):
+        source = inspect.getsource(QuickTranslatorWindow._init_navigation)
+        self.assertIn("navigationInterface.addItem", source)
+        self.assertIn("NavigationItemPosition.TOP", source)
+        self.assertIn("NavigationItemPosition.BOTTOM", source)
 
     def test_legacy_double_ctrl_migrates_to_new_default(self):
         self.assertEqual(normalize_hotkey("双击 Ctrl"), "ctrl_double_c")
@@ -117,8 +95,8 @@ class TranslationTests(unittest.TestCase):
 
     def test_window_height_tracks_content_without_old_blank_area(self):
         self.assertEqual(calculate_panel_height(4, 25), 184)
-        self.assertEqual(calculate_window_height(11, 25, 1080), 359)
-        self.assertEqual(calculate_window_height(1, 25, 1080), 190)
+        self.assertEqual(calculate_window_height(11, 25, 1080), 415)
+        self.assertEqual(calculate_window_height(1, 25, 1080), 176)
         self.assertEqual(calculate_window_height(100, 25, 1000), 720)
 
     def test_tk_display_line_transitions_are_converted_to_visible_lines(self):

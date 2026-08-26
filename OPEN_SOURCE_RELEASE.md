@@ -1,4 +1,4 @@
-# QuickTranslator 0.6.7 开源发布说明
+# QuickTranslator 0.7.0 开源发布说明
 
 本压缩包同时包含源码和 Windows 便携版：
 
@@ -12,7 +12,7 @@
 `install.bat` 安装并创建开始菜单和开机启动入口。
 
 从源码运行或开发时，进入 `source`，安装 `requirements.txt` 中的依赖后运行
-`python app.py`。运行 `python -m unittest -v test_app.py` 可执行测试，运行
+`python qt_app.py`。运行 `python -m unittest -v test_app.py` 可执行测试，运行
 `build_portable.bat` 可重新构建便携版。
 
 ## API Key 与隐私
