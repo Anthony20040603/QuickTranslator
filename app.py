@@ -22,7 +22,7 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 FONT_TEXT = "Segoe UI Variable Text"
 FONT_DISPLAY = "Segoe UI Variable Text"
 FONT_ICON = "Segoe Fluent Icons"
@@ -33,7 +33,7 @@ ERROR_ALREADY_EXISTS = 183
 INSTANCE_MUTEX_NAME = "Local\\QuickTranslatorSingleInstance"
 DEFAULT_HOTKEY = "ctrl_double_c"
 TITLEBAR_HEIGHT = 32
-TOOLBAR_HEIGHT = 42
+MENU_CLIENT_HEIGHT = 0
 MIN_WINDOW_HEIGHT = 190
 HOTKEY_LABELS = {
     "ctrl_double_c": "按住 Ctrl，双击 C",
@@ -116,13 +116,13 @@ def resolve_theme(value: object) -> str:
 
 
 def calculate_panel_height(display_lines: int, line_height: int) -> int:
-    """Fit text, action row and the rounded panel's inner padding."""
+    """Fit the editable text and the compact action row."""
     return 84 + max(1, display_lines) * max(16, line_height)
 
 
 def calculate_window_height(display_lines: int, line_height: int, screen_height: int) -> int:
-    """Fit the compact toolbar and translation area without leaving blank space."""
-    content_height = calculate_panel_height(display_lines, line_height) + TOOLBAR_HEIGHT
+    """Fit the translation area; the native menu belongs to the Windows frame."""
+    content_height = calculate_panel_height(display_lines, line_height) + MENU_CLIENT_HEIGHT
     return min(int(screen_height * 0.72), max(MIN_WINDOW_HEIGHT, content_height))
 
 
@@ -922,6 +922,7 @@ def translate_qwen_stream(
 class QuickTranslator:
     def __init__(self) -> None:
         self.cfg = Config.load()
+        self._ui_smoke_test = "--ui-smoke-test" in sys.argv
         self._executable_name = Path(sys.executable).stem.lower()
         preview_theme = (
             "dark" if "darkpreview" in self._executable_name
@@ -932,6 +933,8 @@ class QuickTranslator:
         self._resolved_theme = preview_theme or resolve_theme(self.cfg.theme)
         apply_palette(self._resolved_theme)
         self.root = tk.Tk()
+        if self._ui_smoke_test:
+            self.root.withdraw()
         self.root.title("QuickTranslator")
         self.root.attributes("-alpha", 1.0)
         self.root.geometry("680x300")
@@ -952,8 +955,6 @@ class QuickTranslator:
         self._memories = load_translation_memory()
         self._user_resized = False
         self._resize_job = None
-        self._resize_animation_job = None
-        self._resize_target = None
         self._scrollbar_job = None
         self._edge_resize = None
         self._cursor_widget = None
@@ -963,9 +964,10 @@ class QuickTranslator:
         self._tray_image = self._make_tray_image()
         self._build_ui()
         self.root.bind("<Configure>", self._track_native_resize, add="+")
-        self._start_tray()
-        self.root.after(100, self._poll_events)
-        self.root.after(2500, self._poll_system_theme)
+        if not self._ui_smoke_test:
+            self._start_tray()
+            self.root.after(100, self._poll_events)
+            self.root.after(2500, self._poll_system_theme)
         settings_preview = "--settings-preview" in sys.argv or "settingspreview" in self._executable_name
         short_content_preview = "shortcontentpreview" in self._executable_name
         content_preview = (
@@ -995,8 +997,9 @@ class QuickTranslator:
         else:
             self.root.after(500, self.hide)
             self.root.after(40, lambda: apply_fluent_window(self.root, 0))
-        threading.Thread(target=self._translation_hotkey_loop, daemon=True).start()
-        threading.Thread(target=self._double_shift_loop, daemon=True).start()
+        if not self._ui_smoke_test:
+            threading.Thread(target=self._translation_hotkey_loop, daemon=True).start()
+            threading.Thread(target=self._double_shift_loop, daemon=True).start()
 
     def _build_ui(self) -> None:
         self._configure_fluent_styles()
@@ -1005,35 +1008,55 @@ class QuickTranslator:
         )
         self.root.iconphoto(True, self._window_icon)
 
-        toolbar = tk.Frame(
-            self.root, background=SURFACE_ALT, height=TOOLBAR_HEIGHT,
-            borderwidth=0, highlightthickness=0,
-        )
-        toolbar.pack(fill="x")
-        toolbar.pack_propagate(False)
+        old_menu = getattr(self, "menu_bar", None)
+        if old_menu is not None:
+            try:
+                old_menu.destroy()
+            except tk.TclError:
+                pass
+        self.menu_bar = tk.Menu(self.root, tearoff=False)
 
-        self.mode_var = tk.StringVar(value=f"模型：{self._mode_label()}")
-        self.mode_button = ttk.Menubutton(
-            toolbar, textvariable=self.mode_var, style="Toolbar.TMenubutton",
+        self.mode_var = tk.StringVar(value=self.cfg.translation_mode)
+        self.model_menu = tk.Menu(self.menu_bar, tearoff=False)
+        self.model_menu.add_radiobutton(
+            label="精准 Plus", variable=self.mode_var, value="accurate",
+            command=lambda: self.set_mode("accurate"),
         )
-        mode_menu = tk.Menu(toolbar, tearoff=False)
-        mode_menu.add_command(label="精准 Plus", command=lambda: self.set_mode("accurate"))
-        mode_menu.add_command(label="极速 Turbo", command=lambda: self.set_mode("fast"))
-        self.mode_button.configure(menu=mode_menu)
-        self.mode_button.pack(side="left", padx=(8, 4), pady=7)
+        self.model_menu.add_radiobutton(
+            label="极速 Turbo", variable=self.mode_var, value="fast",
+            command=lambda: self.set_mode("fast"),
+        )
+        self.menu_bar.add_cascade(label="模型(M)", menu=self.model_menu, underline=3)
 
-        theme_action = "浅色" if self._resolved_theme == "dark" else "深色"
-        self.theme_button = ttk.Button(
-            toolbar, text=theme_action, command=self.toggle_theme, style="Toolbar.TButton",
+        self.theme_var = tk.StringVar(value=normalize_theme(self.cfg.theme))
+        self.theme_menu = tk.Menu(self.menu_bar, tearoff=False)
+        for key in ("system", "light", "dark"):
+            self.theme_menu.add_radiobutton(
+                label=THEME_LABELS[key], variable=self.theme_var, value=key,
+                command=lambda selected=key: self.set_theme(selected),
+            )
+        self.menu_bar.add_cascade(label="主题(V)", menu=self.theme_menu, underline=3)
+
+        self.settings_menu = tk.Menu(self.menu_bar, tearoff=False)
+        self.settings_menu.add_command(label="打开设置…", command=self.open_settings)
+        self.settings_menu.add_separator()
+        self.settings_menu.add_command(
+            label="翻译服务", command=lambda: self.open_settings("qwen"),
         )
-        self.theme_button.pack(side="left", padx=4, pady=7)
-        ttk.Button(
-            toolbar, text="设置…", command=self.open_settings, style="Toolbar.TButton",
-        ).pack(side="left", padx=4, pady=7)
+        self.settings_menu.add_command(
+            label="科研术语", command=lambda: self.open_settings("research"),
+        )
+        self.settings_menu.add_command(
+            label="快捷键", command=lambda: self.open_settings("hotkey"),
+        )
+        self.settings_menu.add_command(
+            label="外观", command=lambda: self.open_settings("appearance"),
+        )
+        self.menu_bar.add_cascade(label="设置(S)", menu=self.settings_menu, underline=3)
+        self.root.configure(menu=self.menu_bar)
 
         panel = tk.Frame(
-            self.root, background=SURFACE, borderwidth=0,
-            highlightthickness=1, highlightbackground=BORDER,
+            self.root, background=SURFACE, borderwidth=0, highlightthickness=0,
         )
         self.translation_panel = panel
         panel.pack(fill="both", expand=True)
@@ -1041,7 +1064,7 @@ class QuickTranslator:
         panel_body.rowconfigure(0, weight=1)
         panel_body.columnconfigure(0, weight=1)
         self.output = tk.Text(
-            panel_body, wrap="char", padx=16, pady=14, height=4, font=(FONT_TEXT, 11),
+            panel_body, wrap="char", padx=12, pady=10, height=4, font=(FONT_TEXT, 11),
             relief="flat", borderwidth=0, highlightthickness=0,
             background=SURFACE, foreground=TEXT, insertbackground=TEXT,
             selectbackground=SELECTION, spacing1=3, spacing3=3, undo=True,
@@ -1072,12 +1095,10 @@ class QuickTranslator:
             if candidate in style.theme_names():
                 style.theme_use(candidate)
                 break
-        style.configure("Toolbar.TButton", padding=(10, 4))
-        style.configure("Toolbar.TMenubutton", padding=(10, 4))
         style.configure("Action.TButton", padding=(12, 5))
         style.configure("Primary.TButton", padding=(12, 5))
         if IS_DARK:
-            for name in ("Toolbar.TButton", "Toolbar.TMenubutton", "Action.TButton"):
+            for name in ("Action.TButton",):
                 style.configure(
                     name, background=CONTROL_FILL, foreground=TEXT,
                     bordercolor=BORDER_STRONG, lightcolor=BORDER_STRONG,
@@ -1129,14 +1150,7 @@ class QuickTranslator:
         try:
             first, last = self.output.yview()
             self.scrollbar.set(first, last)
-            first_line = self.output.dlineinfo("1.0")
-            last_line = self.output.dlineinfo("end-1c")
-            widget_height = self.output.winfo_height()
-            overflowing = (
-                first_line is None or last_line is None
-                or first_line[1] < 0
-                or last_line[1] + last_line[3] > widget_height
-            )
+            overflowing = float(first) > 0.0001 or float(last) < 0.9999
         except tk.TclError:
             return
         if overflowing and not self.scrollbar.winfo_ismapped():
@@ -1198,7 +1212,7 @@ class QuickTranslator:
             return
         self.cfg.translation_mode = mode
         if hasattr(self, "mode_var"):
-            self.mode_var.set(f"模型：{self._mode_label()}")
+            self.mode_var.set(mode)
         self.cfg.save()
         self.status.config(text=f"已切换为 {self._mode_label()}")
 
@@ -1208,10 +1222,14 @@ class QuickTranslator:
 
     def toggle_theme(self) -> None:
         resolved = "light" if self._resolved_theme == "dark" else "dark"
-        self.cfg.theme = resolved
+        self.set_theme(resolved)
+
+    def set_theme(self, theme: str) -> None:
+        theme = normalize_theme(theme)
+        self.cfg.theme = theme
         self.cfg.save()
-        self._apply_resolved_theme(resolved)
-        self.status.config(text=f"已切换为{THEME_LABELS[resolved]}模式")
+        self._apply_resolved_theme(resolve_theme(theme))
+        self.status.config(text=f"主题：{THEME_LABELS[theme]}")
 
     def _restore_topmost(self) -> None:
         if not self._quitting:
@@ -1591,18 +1609,17 @@ class QuickTranslator:
             self.output.insert("end", message[common:])
         if not resize:
             self.output.see("end")
-        if not self._user_resized:
-            if resize and self._resize_job is not None:
+        if resize and not self._user_resized:
+            if self._resize_job is not None:
                 self.root.after_cancel(self._resize_job)
                 self._resize_job = None
-            # Measure at most once per short frame group. Streaming therefore grows
-            # continuously, without doing an expensive layout pass for every token.
-            if self._resize_job is None:
-                self._resize_job = self.root.after(0 if resize else 70, self._auto_size_to_content)
+            self._resize_job = self.root.after_idle(self._auto_size_to_content)
+        elif self._scrollbar_job is None:
+            self._scrollbar_job = self.root.after_idle(self._refresh_output_scrollbar)
 
     def show_translation(self, text: str, final: bool = False) -> None:
         rendered = normalize_translation_output(text, self._current_source)
-        # Chunk redraws are coalesced; height follows them through a separate animation.
+        # Streaming only updates text. Resize once after the final chunk to avoid flicker.
         self.show_message(rendered, resize=final)
 
     def _auto_size_to_content(self) -> None:
@@ -1626,37 +1643,17 @@ class QuickTranslator:
         target_height = calculate_window_height(display_lines, line_height, screen_height)
         panel_height = min(
             calculate_panel_height(display_lines, line_height),
-            target_height - TOOLBAR_HEIGHT,
+            target_height - MENU_CLIENT_HEIGHT,
         )
         if hasattr(self, "translation_panel"):
             self.translation_panel.configure(height=max(120, panel_height))
-            self.translation_panel.pack_configure(fill="x", expand=False)
+            self.translation_panel.pack_configure(fill="both", expand=True)
         width = max(520, self.root.winfo_width())
         x, y = self.root.winfo_x(), self.root.winfo_y()
         target_y = min(y, screen_height - target_height - 55)
-        self._resize_target = (target_height, max(0, target_y))
-        if self._resize_animation_job is None:
-            self._animate_height()
-
-    def _animate_height(self) -> None:
-        self._resize_animation_job = None
-        if self._user_resized or self.root.state() == "withdrawn" or not self._resize_target:
-            return
-        target_height, target_y = self._resize_target
-        height, y = self.root.winfo_height(), self.root.winfo_y()
-        # Ease toward the latest target; a changing stream simply updates that target.
-        next_height = height + max(-18, min(18, round((target_height - height) * 0.28)))
-        next_y = y + max(-18, min(18, round((target_y - y) * 0.28)))
-        if abs(target_height - height) <= 2:
-            next_height = target_height
-        if abs(target_y - y) <= 2:
-            next_y = target_y
-        width, x = max(520, self.root.winfo_width()), max(0, self.root.winfo_x())
-        self.root.geometry(f"{width}x{next_height}+{x}+{max(0, next_y)}")
+        self.root.geometry(f"{width}x{target_height}+{max(0, x)}+{max(0, target_y)}")
         if self._scrollbar_job is None:
             self._scrollbar_job = self.root.after_idle(self._refresh_output_scrollbar)
-        if next_height != target_height or next_y != target_y:
-            self._resize_animation_job = self.root.after(16, self._animate_height)
 
     def copy_result(self) -> None:
         text = self.output.get("1.0", "end-1c")
@@ -1908,6 +1905,17 @@ def run_self_test() -> bool:
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
         raise SystemExit(0 if run_self_test() else 1)
+    if "--ui-smoke-test" in sys.argv:
+        smoke_app = QuickTranslator()
+        smoke_app.root.update_idletasks()
+        smoke_ok = (
+            str(smoke_app.root.cget("menu"))
+            and smoke_app.output.cget("relief") == "flat"
+            and int(smoke_app.output.cget("highlightthickness")) == 0
+        )
+        smoke_app._quitting = True
+        smoke_app.root.destroy()
+        raise SystemExit(0 if smoke_ok else 1)
     executable_stem = Path(sys.executable).stem.lower()
     mutex_name = (
         f"{INSTANCE_MUTEX_NAME}-{executable_stem}"

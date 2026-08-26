@@ -76,6 +76,17 @@ class TranslationTests(unittest.TestCase):
         self.assertNotIn("clipboard_clear", capture_source)
         self.assertNotIn("clipboard_append", capture_source)
 
+    def test_main_window_uses_native_windows_menu_bar(self):
+        source = inspect.getsource(QuickTranslator._build_ui)
+        self.assertIn("self.root.configure(menu=self.menu_bar)", source)
+        self.assertIn("self.menu_bar.add_cascade", source)
+        self.assertNotIn("ttk.Menubutton", source)
+
+    def test_streaming_chunks_do_not_resize_the_window(self):
+        source = inspect.getsource(QuickTranslator.show_message)
+        self.assertIn("if resize and not self._user_resized", source)
+        self.assertNotIn("else 70", source)
+
     def test_legacy_double_ctrl_migrates_to_new_default(self):
         self.assertEqual(normalize_hotkey("双击 Ctrl"), "ctrl_double_c")
         self.assertEqual(hotkey_label("双击 Ctrl"), "按住 Ctrl，双击 C")
@@ -88,7 +99,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_window_height_tracks_content_without_old_blank_area(self):
         self.assertEqual(calculate_panel_height(4, 25), 184)
-        self.assertEqual(calculate_window_height(11, 25, 1080), 401)
+        self.assertEqual(calculate_window_height(11, 25, 1080), 359)
         self.assertEqual(calculate_window_height(1, 25, 1080), 190)
         self.assertEqual(calculate_window_height(100, 25, 1000), 720)
 
