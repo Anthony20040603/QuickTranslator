@@ -22,11 +22,12 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.6.6"
+VERSION = "0.6.7"
 FONT_TEXT = "Segoe UI Variable Text"
 FONT_DISPLAY = "Segoe UI Variable Text"
 FONT_ICON = "Segoe Fluent Icons"
 MENU_FONT = ("Segoe UI", 10)
+MENU_CHECK_PAD = "    "
 CONFIG_PATH = Path(os.getenv("APPDATA", Path.home())) / "QuickTranslator" / "config.json"
 TM_PATH = CONFIG_PATH.with_name("translation_memory.json")
 ICON_PATH = Path(__file__).resolve().parent / "assets" / "app_icon.png"
@@ -1040,11 +1041,11 @@ class QuickTranslator:
         self.mode_var = tk.StringVar(value=self.cfg.translation_mode)
         self.model_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
         self.model_menu.add_radiobutton(
-            label="精准 Plus", variable=self.mode_var, value="accurate",
+            label=f"{MENU_CHECK_PAD}精准 Plus", variable=self.mode_var, value="accurate",
             command=lambda: self.set_mode("accurate"),
         )
         self.model_menu.add_radiobutton(
-            label="极速 Turbo", variable=self.mode_var, value="fast",
+            label=f"{MENU_CHECK_PAD}极速 Turbo", variable=self.mode_var, value="fast",
             command=lambda: self.set_mode("fast"),
         )
         self.menu_bar.add_cascade(label="模型(M)", menu=self.model_menu, underline=3)
@@ -1053,7 +1054,8 @@ class QuickTranslator:
         self.theme_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
         for key in ("system", "light", "dark"):
             self.theme_menu.add_radiobutton(
-                label=THEME_LABELS[key], variable=self.theme_var, value=key,
+                label=f"{MENU_CHECK_PAD}{THEME_LABELS[key]}",
+                variable=self.theme_var, value=key,
                 command=lambda selected=key: self.set_theme(selected),
             )
         self.menu_bar.add_cascade(label="主题(V)", menu=self.theme_menu, underline=3)
@@ -1061,7 +1063,8 @@ class QuickTranslator:
         self.topmost_var = tk.BooleanVar(value=self.cfg.always_on_top)
         self.window_menu = tk.Menu(self.menu_bar, tearoff=False, font=MENU_FONT)
         self.window_menu.add_checkbutton(
-            label="始终置顶", variable=self.topmost_var, command=self.toggle_topmost,
+            label=f"{MENU_CHECK_PAD}始终置顶",
+            variable=self.topmost_var, command=self.toggle_topmost,
         )
         self.menu_bar.add_cascade(label="窗口(W)", menu=self.window_menu, underline=3)
 
@@ -1924,6 +1927,9 @@ if __name__ == "__main__":
             and smoke_app.output.cget("relief") == "flat"
             and int(smoke_app.output.cget("highlightthickness")) == 0
             and any(isinstance(widget, ttk.Notebook) for widget in settings_widgets)
+            and smoke_app.model_menu.entrycget(0, "label").startswith(MENU_CHECK_PAD)
+            and smoke_app.theme_menu.entrycget(0, "label").startswith(MENU_CHECK_PAD)
+            and smoke_app.window_menu.entrycget(0, "label").startswith(MENU_CHECK_PAD)
         )
         smoke_app._quitting = True
         smoke_app.root.destroy()

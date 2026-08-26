@@ -82,6 +82,7 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("self.menu_bar.add_cascade", source)
         self.assertIn("self.window_menu.add_checkbutton", source)
         self.assertIn("font=MENU_FONT", source)
+        self.assertIn("MENU_CHECK_PAD", source)
         self.assertNotIn("ttk.Menubutton", source)
 
     def test_settings_use_native_property_sheet_controls(self):
