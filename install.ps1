@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName Microsoft.VisualBasic
 
 function Get-Sha256([string]$Path) {
     $stream = [System.IO.File]::OpenRead($Path)
@@ -29,7 +30,13 @@ function Assert-SafeProgramPath([string]$path) {
 
 function Remove-SafeDirectory([string]$path) {
     Assert-SafeProgramPath $path
-    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    if (Test-Path -LiteralPath $path) {
+        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
+            $path,
+            [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+            [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+        )
+    }
 }
 
 function Verify-Package([string]$directory) {

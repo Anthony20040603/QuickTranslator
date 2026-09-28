@@ -22,7 +22,7 @@ import pystray
 
 
 APP_NAME = "划词翻译"
-VERSION = "0.6.7"
+VERSION = "0.6.8"
 FONT_TEXT = "Segoe UI Variable Text"
 FONT_DISPLAY = "Segoe UI Variable Text"
 FONT_ICON = "Segoe Fluent Icons"
@@ -39,9 +39,6 @@ MENU_CLIENT_HEIGHT = 0
 MIN_WINDOW_HEIGHT = 190
 HOTKEY_LABELS = {
     "ctrl_double_c": "按住 Ctrl，双击 C",
-    "ctrl_alt_t": "Ctrl + Alt + T",
-    "double_alt": "双击 Alt",
-    "double_ctrl": "双击 Ctrl",
 }
 THEME_LABELS = {
     "system": "跟随 Windows",
@@ -96,14 +93,9 @@ def enable_high_dpi() -> None:
 
 
 def normalize_hotkey(value: object) -> str:
-    legacy_values = {
-        "双击 Ctrl": DEFAULT_HOTKEY,
-        "Ctrl+双击 C": DEFAULT_HOTKEY,
-        "Ctrl + 双击 C": DEFAULT_HOTKEY,
-        "Ctrl+Alt+T": "ctrl_alt_t",
-    }
-    normalized = legacy_values.get(str(value), str(value))
-    return normalized if normalized in HOTKEY_LABELS else DEFAULT_HOTKEY
+    # 0.6.8 intentionally uses one predictable global shortcut. Older saved
+    # shortcut values migrate here so they cannot keep causing accidental opens.
+    return DEFAULT_HOTKEY
 
 
 def hotkey_label(value: object) -> str:
@@ -654,20 +646,9 @@ class HotkeyDetector:
             self.mode = normalized
             self.reset()
 
-        if normalized == "ctrl_alt_t":
-            down = ctrl and alt and t
-            triggered = down and not self.was_down
-            self.was_down = down
-            return triggered
-
-        if normalized == "ctrl_double_c":
-            down = ctrl and c
-            if not ctrl:
-                self.last_press = 0.0
-        elif normalized == "double_alt":
-            down = alt
-        else:
-            down = ctrl
+        down = ctrl and c
+        if not ctrl:
+            self.last_press = 0.0
 
         triggered = False
         if down and not self.was_down:
@@ -1021,7 +1002,6 @@ class QuickTranslator:
             self.root.after(40, lambda: apply_fluent_window(self.root, 0))
         if not self._ui_smoke_test:
             threading.Thread(target=self._translation_hotkey_loop, daemon=True).start()
-            threading.Thread(target=self._double_shift_loop, daemon=True).start()
 
     def _build_ui(self) -> None:
         self._configure_fluent_styles()
@@ -1447,22 +1427,6 @@ class QuickTranslator:
                 self.events.put(("translate",))
             time.sleep(0.015)
 
-    def _double_shift_loop(self) -> None:
-        user32 = ctypes.windll.user32
-        was_down = False
-        last_press = 0.0
-        while not self._quitting:
-            down = bool(user32.GetAsyncKeyState(0x10) & 0x8000)
-            if down and not was_down:
-                now = time.monotonic()
-                if 0.08 < now - last_press < 0.42:
-                    self.events.put(("show",))
-                    last_press = 0.0
-                else:
-                    last_press = now
-            was_down = down
-            time.sleep(0.015)
-
     def _poll_events(self) -> None:
         render_text = None
         translation_done = False
@@ -1471,6 +1435,10 @@ class QuickTranslator:
                 event = self.events.get_nowait()
                 kind = event[0]
                 if kind == "translate":
+                    # Ctrl+C,C is both the translation shortcut and the
+                    # universal way to summon the app, even without a selection.
+                    self.show_window()
+                    self.status.config(text="正在读取选中文字…")
                     self._start_safe_capture()
                 elif kind == "show":
                     self.show_window()
@@ -1506,7 +1474,7 @@ class QuickTranslator:
         self._clipboard_sequence = ctypes.windll.user32.GetClipboardSequenceNumber()
         if not send_ctrl_c():
             self._capture_in_progress = False
-            self._show_error("Windows 未能发送复制指令；程序没有修改剪贴板。")
+            self.status.config(text="窗口已打开 · 未能读取选中文字")
             return
         self._capture_deadline = time.monotonic() + 1.2
         self.root.after(60, self._read_selection)
@@ -1539,7 +1507,7 @@ class QuickTranslator:
                 self.root.after(50, self._read_selection)
                 return
             self._capture_in_progress = False
-            self._show_error("没有读取到选中文字；程序未改写你的剪贴板。")
+            self.status.config(text="窗口已打开 · 未检测到选中文字")
             return
         try:
             text = self.root.clipboard_get().strip()
@@ -1548,12 +1516,12 @@ class QuickTranslator:
                 self.root.after(50, self._read_selection)
                 return
             self._capture_in_progress = False
-            self._show_error("剪贴板正被其他程序占用，无法读取选中文字。")
+            self.status.config(text="窗口已打开 · 剪贴板暂时不可用")
             return
         self._capture_in_progress = False
         text = normalize_pdf_layout(text)
         if not text:
-            self.show_message("选中的内容为空，请重新选择后再按快捷键。")
+            self.status.config(text="窗口已打开 · 未检测到选中文字")
             return
         self._request_id += 1
         request_id = self._request_id
@@ -1837,7 +1805,7 @@ class QuickTranslator:
         ], "百炼未配置或调用失败时自动使用该通道。现有智谱设置会被保留。")
 
         shortcut_page = make_page(
-            "hotkey", "快捷键", "选择不与其他 Windows 功能冲突的翻译触发方式。",
+            "hotkey", "快捷键", "使用统一且不易误触的全局翻译快捷键。",
         )
         ttk.Label(shortcut_page, text="翻译触发方式").grid(
             row=1, column=0, sticky="w", padx=(0, 18), pady=7,
@@ -1855,7 +1823,7 @@ class QuickTranslator:
         ttk.Label(
             shortcut_page,
             text=(
-                "推荐“按住 Ctrl，双击 C”；与 Windows 复制操作一致，且不会触发双击 Ctrl 的鼠标定位。"
+                "按住 Ctrl，连续按两次 C 即可显示窗口；没有选中文字时也能打开软件。"
                 "Fn 通常由键盘硬件处理，无法被 Windows 程序稳定监听。"
             ),
             wraplength=650, justify="left",

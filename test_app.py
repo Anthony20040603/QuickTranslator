@@ -108,6 +108,8 @@ class TranslationTests(unittest.TestCase):
     def test_legacy_double_ctrl_migrates_to_new_default(self):
         self.assertEqual(normalize_hotkey("双击 Ctrl"), "ctrl_double_c")
         self.assertEqual(hotkey_label("双击 Ctrl"), "按住 Ctrl，双击 C")
+        self.assertEqual(normalize_hotkey("double_alt"), "ctrl_double_c")
+        self.assertEqual(normalize_hotkey("ctrl_alt_t"), "ctrl_double_c")
 
     def test_theme_values_are_normalized_and_labeled(self):
         self.assertEqual(normalize_theme("DARK"), "dark")
@@ -139,12 +141,21 @@ class TranslationTests(unittest.TestCase):
         detector.reset()
         self.assertFalse(detector.update("ctrl_double_c", 2.00, ctrl=False, alt=False, c=True, t=False))
 
-    def test_ctrl_alt_t_triggers_once_until_released(self):
-        detector = HotkeyDetector()
-        self.assertTrue(detector.update("ctrl_alt_t", 1.0, ctrl=True, alt=True, c=False, t=True))
-        self.assertFalse(detector.update("ctrl_alt_t", 1.1, ctrl=True, alt=True, c=False, t=True))
-        self.assertFalse(detector.update("ctrl_alt_t", 1.2, ctrl=True, alt=True, c=False, t=False))
-        self.assertTrue(detector.update("ctrl_alt_t", 1.3, ctrl=True, alt=True, c=False, t=True))
+    def test_double_shift_listener_is_removed(self):
+        source = inspect.getsource(QuickTranslator)
+        self.assertNotIn("_double_shift_loop", source)
+        self.assertNotIn("GetAsyncKeyState(0x10)", source)
+
+    def test_translation_hotkey_opens_window_before_capture(self):
+        source = inspect.getsource(QuickTranslator._poll_events)
+        show_index = source.index("self.show_window()")
+        capture_index = source.index("self._start_safe_capture()")
+        self.assertLess(show_index, capture_index)
+
+    def test_missing_selection_keeps_window_open_without_translation_error(self):
+        source = inspect.getsource(QuickTranslator._read_selection)
+        self.assertIn("窗口已打开 · 未检测到选中文字", source)
+        self.assertNotIn("self._show_error", source)
 
     @patch("urllib.request.urlopen")
     def test_qwen_cumulative_stream_replaces_instead_of_appending(self, urlopen):
